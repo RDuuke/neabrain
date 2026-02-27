@@ -1,0 +1,48 @@
+# Go build artifacts
+bin/
+dist/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Go work files
+go.work
+go.work.sum
+
+# Coverage
+coverage/
+*.cover
+*.cov
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Logs
+*.log
+
+# Local config
+.env
+.env.*
+
+# Runtime data
+*.db
+*.sqlite
+*.sqlite3
+*.db-shm
+*.db-wal
+
+# Temporary
+tmp/
+temp/
+*.tmp
+
+# OpenCode artifacts
+.agents/
+.opencode/
