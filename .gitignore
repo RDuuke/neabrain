@@ -2,6 +2,7 @@
 bin/
 dist/
 *.exe
+neabrain.exe
 neabrain
 *.exe~
 *.dll
@@ -43,6 +44,7 @@ Thumbs.db
 tmp/
 temp/
 *.tmp
+build/
 
 # OpenCode artifacts
 .agents/

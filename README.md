@@ -1,28 +1,30 @@
 # NeaBrain
 
-NeaBrain is a single-user memory system that delivers consistent behavior across CLI, HTTP, MCP, and TUI interfaces. The architecture isolates core domain logic from adapter and storage concerns so all interfaces share identical semantics.
+![NeaBrain Logo](logo.png)
 
-## Goals
-- Provide consistent CRUD, search, dedupe, topic upsert, and session behavior across adapters.
-- Keep domain rules stable while allowing storage, FTS, and interface implementations to evolve.
-- Support local-first operation with clear configuration and override precedence.
+NeaBrain es un sistema de memory single-user que entrega comportamiento consistente en interfaces CLI, HTTP, MCP y TUI. La arquitectura aisla el core domain logic de adapters y storage para que todas las interfaces compartan la misma semantica.
 
-## Architecture
-NeaBrain follows a hexagonal (ports and adapters) architecture:
+## Metas
+- Proveer CRUD, search, dedupe, topic upsert y session behavior consistente entre adapters.
+- Mantener las domain rules estables mientras evolucionan storage, FTS e interfaces.
+- Soportar operacion local-first con configuration clara y precedence de overrides.
+
+## Arquitectura
+NeaBrain sigue una arquitectura hexagonal (ports and adapters):
 - Core entities: Observation, Topic, Session, Duplicate.
 - Inbound ports: ObservationService, SearchService, TopicService, SessionService, ConfigService.
 - Outbound ports: ObservationRepository, TopicRepository, SessionRepository, DuplicateRepository, SearchIndex, Clock.
-- Adapters: CLI, HTTP, MCP, TUI; plus local storage, FTS, config, and clock implementations.
+- Adapters: CLI, HTTP, MCP, TUI; mas implementaciones locales de storage, FTS, config y clock.
 
 Diagrams (Mermaid specs):
 - `docs/diagrams/hexagonal-architecture.md`
 - `docs/diagrams/data-flow.md`
 - `docs/diagrams/storage-schema.md`
 
-## Install
+## Instalacion
 
 ### From source
-Prereqs: Go 1.22 or newer.
+Prereqs: Go 1.22 o superior.
 
 ```bash
 git clone <repo-url>
@@ -37,21 +39,21 @@ go run ./cmd/neabrain --help
 ```
 
 ### Binary (optional)
-Prebuilt binaries are not published yet. Placeholder for future releases:
+Todavia no hay binaries publicados. Placeholder para futuras releases:
 
 ```text
 # TODO: add release URLs once published
 ```
 
-## Quick start
+## Inicio rapido
 
-Create an observation:
+Crear una observation:
 
 ```bash
 ./neabrain observation create --content "hello" --project "demo" --topic "onboarding" --tags "cli"
 ```
 
-Search observations:
+Search de observations:
 
 ```bash
 ./neabrain search --query "hello" --project "demo"
@@ -76,13 +78,13 @@ Run TUI:
 ```
 
 ## Configuration
-Defaults, overrides, and environment variables are documented in `docs/operations.md`.
+Defaults, overrides y environment variables estan documentados en `docs/operations.md`.
 
-Summary:
+Resumen:
 - Config directory: os.UserConfigDir()/neabrain
 - Config file: <config dir>/config.json
 - Storage path: <config dir>/neabrain.db
-- FTS path: defaults to storage path when unset
+- FTS path: defaults to storage path cuando no se setea
 - Precedence: CLI overrides > environment variables > config file > defaults
 
 Environment variables:
@@ -118,7 +120,7 @@ Example:
 ```
 
 ## HTTP API
-All endpoints are served by `serve`.
+Todos los endpoints se sirven con `serve`.
 
 Observations:
 - `POST /observations`
@@ -139,7 +141,7 @@ Sessions:
 - `PATCH /sessions/{id}`
 
 ## MCP tools
-MCP server exposes the following tools via JSON-RPC:
+El MCP server expone los siguientes tools via JSON-RPC:
 - `observation.create`
 - `observation.read`
 - `observation.update`
@@ -153,10 +155,10 @@ MCP server exposes the following tools via JSON-RPC:
 - `config.show`
 
 ## OpenCode MCP plugin
-This repo includes an OpenCode MCP plugin package for NeaBrain:
+Este repo incluye un OpenCode MCP plugin package para NeaBrain:
 - Package: `plugins/opencode-mcp`
-- Install and usage: `docs/opencode-mcp.md`
-- Adapter: `plugins/opencode-mcp/adapter.ts` (registers `nbn_*` tool aliases and compaction hooks)
+- Install y usage: `docs/opencode-mcp.md`
+- Adapter: `plugins/opencode-mcp/adapter.ts` (registra `nbn_*` tool aliases y compaction hooks)
 
 ## Verification
 
