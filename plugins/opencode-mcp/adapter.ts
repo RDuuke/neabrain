@@ -2,21 +2,140 @@ import type { Plugin } from "@opencode-ai/plugin";
 import { tool } from "@opencode-ai/plugin";
 import { spawn } from "node:child_process";
 
+type McpErrorData = {
+  code?: string;
+  message?: string;
+};
+
+type McpError = {
+  code?: number;
+  message?: string;
+  data?: McpErrorData;
+};
+
 type McpResult = {
   result?: unknown;
-  error?: {
-    message?: string;
-  };
+  error?: McpError;
 };
+
+type McpCallError = Error & {
+  code?: string;
+  rpcCode?: number;
+};
+
+type SpawnFn = typeof spawn;
+
+let spawnMcp: SpawnFn = spawn;
 
 const MCP_COMMAND = process.env.NEABRAIN_MCP_COMMAND ?? "neabrain";
 const MCP_ARGS = (process.env.NEABRAIN_MCP_ARGS?.trim() ?? "mcp")
   .split(" ")
   .filter(Boolean);
 
+function readNumberEnv(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (!raw) {
+    return fallback;
+  }
+  const value = Number(raw);
+  return Number.isFinite(value) ? value : fallback;
+}
+
+function readBooleanEnv(name: string, fallback = false): boolean {
+  const raw = process.env[name];
+  if (!raw) {
+    return fallback;
+  }
+  const normalized = raw.trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(normalized)) {
+    return true;
+  }
+  if (["0", "false", "no", "off"].includes(normalized)) {
+    return false;
+  }
+  return fallback;
+}
+
+const MCP_READ_TIMEOUT_MS = Math.max(0, readNumberEnv("NEABRAIN_MCP_READ_TIMEOUT_MS", 15000));
+const MCP_READ_RETRIES = Math.max(0, readNumberEnv("NEABRAIN_MCP_READ_RETRIES", 2));
+const MCP_READ_RETRY_BACKOFF_MS = Math.max(
+  0,
+  readNumberEnv("NEABRAIN_MCP_READ_RETRY_BACKOFF_MS", 200),
+);
+const MCP_DIAGNOSTICS_ENABLED = readBooleanEnv("NEABRAIN_MCP_DIAGNOSTICS", false);
+
+const READ_ONLY_TOOLS_FOR_RETRY = new Set([
+  "nbn_observation_read",
+  "nbn_observation_list",
+  "nbn_search",
+  "nbn_config_show",
+  "nbn_context",
+]);
+
 const SESSION_CONTEXT_QUERIES = new Map<string, string>();
 
 const z = tool.schema;
+
+function isReadOnlyTool(name: string): boolean {
+  return READ_ONLY_TOOLS_FOR_RETRY.has(name);
+}
+
+function getDeadlineMs(toolName: string): number | undefined {
+  if (!isReadOnlyTool(toolName)) {
+    return undefined;
+  }
+  if (MCP_READ_TIMEOUT_MS <= 0) {
+    return undefined;
+  }
+  return MCP_READ_TIMEOUT_MS;
+}
+
+function delay(ms: number): Promise<void> {
+  if (ms <= 0) {
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function getErrorCategory(error: unknown): string {
+  if (!error || typeof error !== "object") {
+    return "error";
+  }
+  const err = error as { code?: string; message?: string };
+  if (err.code === "timeout") {
+    return "timeout";
+  }
+  if (err.code === "canceled") {
+    return "canceled";
+  }
+  if (err.message && err.message.toLowerCase().includes("timed out")) {
+    return "timeout";
+  }
+  return "error";
+}
+
+function isRetryableError(error: unknown): boolean {
+  return getErrorCategory(error) === "timeout";
+}
+
+function logDiagnostics(entry: {
+  toolName: string;
+  mcpName: string;
+  attempt: number;
+  maxAttempts: number;
+  durationMs: number;
+  status: "success" | "error";
+  category: string;
+}): void {
+  if (!MCP_DIAGNOSTICS_ENABLED) {
+    return;
+  }
+  const message =
+    `[neabrain-mcp] ${entry.toolName} (${entry.mcpName}) ` +
+    `attempt ${entry.attempt}/${entry.maxAttempts} ${entry.status} ` +
+    `${entry.durationMs}ms ${entry.category}`;
+  console.info(message);
+}
 
 function formatResult(result: unknown): string {
   if (typeof result === "string") {
@@ -37,23 +156,29 @@ function summarizeText(text: string, max = 500): string {
   return `${trimmed.slice(0, max - 3)}...`;
 }
 
-async function callMcpTool(name: string, args: Record<string, unknown>): Promise<unknown> {
+async function callMcpTool(
+  mcpName: string,
+  args: Record<string, unknown>,
+  deadlineMs?: number,
+): Promise<unknown> {
   const payload = {
     jsonrpc: "2.0",
     id: "1",
     method: "tools/call",
     params: {
-      name,
+      name: mcpName,
       arguments: args,
+      ...(deadlineMs ? { deadline_ms: deadlineMs } : {}),
     },
   };
 
-  const child = spawn(MCP_COMMAND, MCP_ARGS, {
+  const child = spawnMcp(MCP_COMMAND, MCP_ARGS, {
     stdio: ["pipe", "pipe", "pipe"],
   });
 
   const stdout: string[] = [];
   const stderr: string[] = [];
+  let timeoutId: NodeJS.Timeout | undefined;
 
   child.stdout.on("data", (chunk) => {
     stdout.push(String(chunk));
@@ -66,10 +191,28 @@ async function callMcpTool(name: string, args: Record<string, unknown>): Promise
   child.stdin.write(`${JSON.stringify(payload)}\n`);
   child.stdin.end();
 
-  await new Promise<void>((resolve, reject) => {
+  const execution = new Promise<void>((resolve, reject) => {
     child.on("error", reject);
     child.on("close", () => resolve());
   });
+
+  if (deadlineMs) {
+    const timeout = new Promise<void>((_resolve, reject) => {
+      timeoutId = setTimeout(() => {
+        child.kill();
+        const error = new Error(`neabrain mcp timed out after ${deadlineMs}ms`) as McpCallError;
+        error.code = "timeout";
+        reject(error);
+      }, deadlineMs);
+    });
+    await Promise.race([execution, timeout]);
+  } else {
+    await execution;
+  }
+
+  if (timeoutId) {
+    clearTimeout(timeoutId);
+  }
 
   const output = stdout.join("").trim();
   if (!output) {
@@ -80,11 +223,74 @@ async function callMcpTool(name: string, args: Record<string, unknown>): Promise
   const line = output.split("\n").find((entry) => entry.trim().length > 0) ?? "";
   const parsed = JSON.parse(line) as McpResult;
   if (parsed.error?.message) {
-    throw new Error(parsed.error.message);
+    const error = new Error(parsed.error.message) as McpCallError;
+    if (parsed.error.data?.code) {
+      error.code = parsed.error.data.code;
+    }
+    if (parsed.error.code !== undefined) {
+      error.rpcCode = parsed.error.code;
+    }
+    throw error;
   }
 
   return parsed.result ?? "";
 }
+
+async function callMcpToolWithRetry(
+  toolName: string,
+  mcpName: string,
+  args: Record<string, unknown>,
+): Promise<unknown> {
+  const deadlineMs = getDeadlineMs(toolName);
+  const maxRetries = isReadOnlyTool(toolName) ? MCP_READ_RETRIES : 0;
+  const maxAttempts = maxRetries + 1;
+
+  let attempt = 0;
+  let lastError: unknown = null;
+
+  while (attempt < maxAttempts) {
+    attempt += 1;
+    const attemptStart = Date.now();
+    try {
+      const result = await callMcpTool(mcpName, args, deadlineMs);
+      const durationMs = Date.now() - attemptStart;
+      logDiagnostics({
+        toolName,
+        mcpName,
+        attempt,
+        maxAttempts,
+        durationMs,
+        status: "success",
+        category: "ok",
+      });
+      return result;
+    } catch (error) {
+      lastError = error;
+      const durationMs = Date.now() - attemptStart;
+      const category = getErrorCategory(error);
+      logDiagnostics({
+        toolName,
+        mcpName,
+        attempt,
+        maxAttempts,
+        durationMs,
+        status: "error",
+        category,
+      });
+      const retryable = isRetryableError(error);
+      if (!retryable || attempt >= maxAttempts) {
+        throw error;
+      }
+      await delay(MCP_READ_RETRY_BACKOFF_MS);
+    }
+  }
+
+  if (lastError) {
+    throw lastError;
+  }
+  throw new Error("neabrain mcp call failed");
+}
+
 
 async function safeMcpCall<T>(action: () => Promise<T>): Promise<T | null> {
   try {
@@ -270,7 +476,11 @@ export const NeaBrainPlugin: Plugin = async ({ client }) => {
           description: config.description,
           args: config.args,
           async execute(args) {
-            const result = await callMcpTool(config.mcp, args as Record<string, unknown>);
+            const result = await callMcpToolWithRetry(
+              toolName,
+              config.mcp,
+              args as Record<string, unknown>,
+            );
             return formatResult(result);
           },
         }),
@@ -297,7 +507,11 @@ export const NeaBrainPlugin: Plugin = async ({ client }) => {
         metadata: args.metadata ?? {},
         allow_duplicate: true,
       };
-      const result = await callMcpTool("observation.create", payload);
+      const result = await callMcpToolWithRetry(
+        "nbn_session_summary",
+        "observation.create",
+        payload,
+      );
       return formatResult(result);
     },
   });
@@ -319,7 +533,7 @@ export const NeaBrainPlugin: Plugin = async ({ client }) => {
         tags: args.tags ?? [],
         include_deleted: args.include_deleted ?? false,
       };
-      const result = await callMcpTool("search", payload);
+      const result = await callMcpToolWithRetry("nbn_context", "search", payload);
       return formatResult(result);
     },
   });

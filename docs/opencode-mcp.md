@@ -72,6 +72,19 @@ Example package.json:
 - Stores a lightweight session summary on compaction.
 - Pulls NeaBrain context before and after compaction.
 
+### Timeouts, retries, and diagnostics
+The adapter enforces read deadlines and retries for read-only tools via environment variables in the
+plugin manifest:
+
+- `NEABRAIN_MCP_READ_TIMEOUT_MS` (default: 15000): per-call deadline for read-only tools.
+- `NEABRAIN_MCP_READ_RETRIES` (default: 2): retry count for read-only tools.
+- `NEABRAIN_MCP_READ_RETRY_BACKOFF_MS` (default: 200): backoff between retries.
+- `NEABRAIN_MCP_DIAGNOSTICS` (default: "0"): set to "1" for duration + error category logs.
+
+Retries apply only to read-only tools: `nbn_observation_read`, `nbn_observation_list`, `nbn_search`,
+`nbn_config_show`, and `nbn_context`. Each read tool call includes a `deadline_ms` parameter so the
+MCP server can honor the timeout.
+
 ### Optional: Custom Config
 You can set config in the plugin manifest with environment variables if needed:
 ```json

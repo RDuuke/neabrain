@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"neabrain/internal/app"
 	"neabrain/internal/domain"
@@ -113,8 +114,9 @@ type ErrorData struct {
 }
 
 type toolsCallParams struct {
-	Name      string          `json:"name"`
-	Arguments json.RawMessage `json:"arguments"`
+	Name       string          `json:"name"`
+	Arguments  json.RawMessage `json:"arguments"`
+	DeadlineMS *int64          `json:"deadline_ms"`
 }
 
 type toolsListResult struct {
@@ -216,6 +218,12 @@ func (s *Server) handleToolsCall(ctx context.Context, req Request) Response {
 	if name == "" {
 		return Response{JSONRPC: "2.0", ID: req.ID, Error: &RPCError{Code: -32602, Message: "tool name required"}}
 	}
+	callCtx := ctx
+	if params.DeadlineMS != nil && *params.DeadlineMS > 0 {
+		var cancel context.CancelFunc
+		callCtx, cancel = context.WithTimeout(ctx, time.Duration(*params.DeadlineMS)*time.Millisecond)
+		defer cancel()
+	}
 	if s != nil && s.app != nil {
 		if s.app.Logger != nil {
 			s.app.Logger.Info("mcp tool call", map[string]any{"tool": name})
@@ -235,7 +243,7 @@ func (s *Server) handleToolsCall(ctx context.Context, req Request) Response {
 		if len(tags) == 0 {
 			tags = []string{"opencode", "session_summary"}
 		}
-		created, err := s.app.ObservationService.Create(ctx, domain.ObservationCreateInput{
+		created, err := s.app.ObservationService.Create(callCtx, domain.ObservationCreateInput{
 			Content:        args.Summary,
 			Project:        pickProject(args.Project, s.app.Config.DefaultProject),
 			TopicKey:       args.TopicKey,
@@ -253,7 +261,7 @@ func (s *Server) handleToolsCall(ctx context.Context, req Request) Response {
 		if err := json.Unmarshal(params.Arguments, &args); err != nil {
 			return Response{JSONRPC: "2.0", ID: req.ID, Error: &RPCError{Code: -32602, Message: "invalid nbn_context args"}}
 		}
-		results, err := s.app.SearchService.Search(ctx, args.Query, domain.SearchFilter{
+		results, err := s.app.SearchService.Search(callCtx, args.Query, domain.SearchFilter{
 			Project:        pickProject(args.Project, s.app.Config.DefaultProject),
 			TopicKey:       args.TopicKey,
 			Tags:           args.Tags,
@@ -288,7 +296,7 @@ func (s *Server) handleToolsCall(ctx context.Context, req Request) Response {
 		if err := json.Unmarshal(params.Arguments, &args); err != nil {
 			return Response{JSONRPC: "2.0", ID: req.ID, Error: &RPCError{Code: -32602, Message: "invalid observation.create args"}}
 		}
-		created, err := s.app.ObservationService.Create(ctx, domain.ObservationCreateInput{
+		created, err := s.app.ObservationService.Create(callCtx, domain.ObservationCreateInput{
 			Content:        args.Content,
 			Project:        pickProject(args.Project, s.app.Config.DefaultProject),
 			TopicKey:       args.TopicKey,
@@ -306,7 +314,7 @@ func (s *Server) handleToolsCall(ctx context.Context, req Request) Response {
 		if err := json.Unmarshal(params.Arguments, &args); err != nil {
 			return Response{JSONRPC: "2.0", ID: req.ID, Error: &RPCError{Code: -32602, Message: "invalid observation.read args"}}
 		}
-		observation, err := s.app.ObservationService.Read(ctx, args.ID, args.IncludeDeleted)
+		observation, err := s.app.ObservationService.Read(callCtx, args.ID, args.IncludeDeleted)
 		if err != nil {
 			return Response{JSONRPC: "2.0", ID: req.ID, Error: rpcErrorFrom(err)}
 		}
@@ -335,7 +343,7 @@ func (s *Server) handleToolsCall(ctx context.Context, req Request) Response {
 		if args.Metadata != nil {
 			input.Metadata = *args.Metadata
 		}
-		updated, err := s.app.ObservationService.Update(ctx, input)
+		updated, err := s.app.ObservationService.Update(callCtx, input)
 		if err != nil {
 			return Response{JSONRPC: "2.0", ID: req.ID, Error: rpcErrorFrom(err)}
 		}
@@ -345,7 +353,7 @@ func (s *Server) handleToolsCall(ctx context.Context, req Request) Response {
 		if err := json.Unmarshal(params.Arguments, &args); err != nil {
 			return Response{JSONRPC: "2.0", ID: req.ID, Error: &RPCError{Code: -32602, Message: "invalid observation.list args"}}
 		}
-		observations, err := s.app.ObservationService.List(ctx, domain.ObservationListFilter{
+		observations, err := s.app.ObservationService.List(callCtx, domain.ObservationListFilter{
 			Project:        pickProject(args.Project, s.app.Config.DefaultProject),
 			TopicKey:       args.TopicKey,
 			Tags:           args.Tags,
@@ -360,7 +368,7 @@ func (s *Server) handleToolsCall(ctx context.Context, req Request) Response {
 		if err := json.Unmarshal(params.Arguments, &args); err != nil {
 			return Response{JSONRPC: "2.0", ID: req.ID, Error: &RPCError{Code: -32602, Message: "invalid observation.delete args"}}
 		}
-		deleted, err := s.app.ObservationService.SoftDelete(ctx, args.ID)
+		deleted, err := s.app.ObservationService.SoftDelete(callCtx, args.ID)
 		if err != nil {
 			return Response{JSONRPC: "2.0", ID: req.ID, Error: rpcErrorFrom(err)}
 		}
@@ -370,7 +378,7 @@ func (s *Server) handleToolsCall(ctx context.Context, req Request) Response {
 		if err := json.Unmarshal(params.Arguments, &args); err != nil {
 			return Response{JSONRPC: "2.0", ID: req.ID, Error: &RPCError{Code: -32602, Message: "invalid search args"}}
 		}
-		results, err := s.app.SearchService.Search(ctx, args.Query, domain.SearchFilter{
+		results, err := s.app.SearchService.Search(callCtx, args.Query, domain.SearchFilter{
 			Project:        pickProject(args.Project, s.app.Config.DefaultProject),
 			TopicKey:       args.TopicKey,
 			Tags:           args.Tags,
@@ -385,7 +393,7 @@ func (s *Server) handleToolsCall(ctx context.Context, req Request) Response {
 		if err := json.Unmarshal(params.Arguments, &args); err != nil {
 			return Response{JSONRPC: "2.0", ID: req.ID, Error: &RPCError{Code: -32602, Message: "invalid topic.upsert args"}}
 		}
-		topic, err := s.app.TopicService.UpsertByTopicKey(ctx, domain.TopicUpsertInput{
+		topic, err := s.app.TopicService.UpsertByTopicKey(callCtx, domain.TopicUpsertInput{
 			TopicKey:    args.TopicKey,
 			Name:        args.Name,
 			Description: args.Description,
@@ -400,7 +408,7 @@ func (s *Server) handleToolsCall(ctx context.Context, req Request) Response {
 		if err := json.Unmarshal(params.Arguments, &args); err != nil {
 			return Response{JSONRPC: "2.0", ID: req.ID, Error: &RPCError{Code: -32602, Message: "invalid session.open args"}}
 		}
-		session, err := s.app.SessionService.Open(ctx, domain.SessionOpenInput{DisclosureLevel: args.DisclosureLevel})
+		session, err := s.app.SessionService.Open(callCtx, domain.SessionOpenInput{DisclosureLevel: args.DisclosureLevel})
 		if err != nil {
 			return Response{JSONRPC: "2.0", ID: req.ID, Error: rpcErrorFrom(err)}
 		}
@@ -410,7 +418,7 @@ func (s *Server) handleToolsCall(ctx context.Context, req Request) Response {
 		if err := json.Unmarshal(params.Arguments, &args); err != nil {
 			return Response{JSONRPC: "2.0", ID: req.ID, Error: &RPCError{Code: -32602, Message: "invalid session.resume args"}}
 		}
-		session, err := s.app.SessionService.Resume(ctx, args.ID)
+		session, err := s.app.SessionService.Resume(callCtx, args.ID)
 		if err != nil {
 			return Response{JSONRPC: "2.0", ID: req.ID, Error: rpcErrorFrom(err)}
 		}
@@ -420,7 +428,7 @@ func (s *Server) handleToolsCall(ctx context.Context, req Request) Response {
 		if err := json.Unmarshal(params.Arguments, &args); err != nil {
 			return Response{JSONRPC: "2.0", ID: req.ID, Error: &RPCError{Code: -32602, Message: "invalid session.update_disclosure args"}}
 		}
-		session, err := s.app.SessionService.UpdateDisclosure(ctx, args.ID, args.DisclosureLevel)
+		session, err := s.app.SessionService.UpdateDisclosure(callCtx, args.ID, args.DisclosureLevel)
 		if err != nil {
 			return Response{JSONRPC: "2.0", ID: req.ID, Error: rpcErrorFrom(err)}
 		}
@@ -588,6 +596,22 @@ func schemaObjectAny() map[string]any {
 func rpcErrorFrom(err error) *RPCError {
 	if err == nil {
 		return nil
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		message := "request deadline exceeded"
+		return &RPCError{
+			Code:    -32000,
+			Message: message,
+			Data:    &ErrorData{Code: "timeout", Message: message},
+		}
+	}
+	if errors.Is(err, context.Canceled) {
+		message := "request canceled"
+		return &RPCError{
+			Code:    -32000,
+			Message: message,
+			Data:    &ErrorData{Code: "canceled", Message: message},
+		}
 	}
 	var domainErr domain.DomainError
 	if errors.As(err, &domainErr) {

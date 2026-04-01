@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"testing"
+	"time"
 
 	httpadapter "neabrain/internal/adapters/inbound/http"
 	"neabrain/internal/adapters/inbound/mcp"
@@ -73,6 +75,63 @@ func TestMCPAndHTTPInvalidInputParity(t *testing.T) {
 	mcpCode := createObservationMCPError(t, mcpApp, payload)
 	if mcpCode != string(domain.ErrorInvalidInput) {
 		t.Fatalf("expected mcp invalid_input, got %s", mcpCode)
+	}
+}
+
+func TestMCPDeadlineTimeoutMapping(t *testing.T) {
+	repo := &blockingObservationRepo{wait: 50 * time.Millisecond}
+	service := domain.NewObservationService(repo, nil, nil, nil, nil)
+	appInstance := &app.App{ObservationService: service}
+	server := mcp.NewServer(appInstance)
+
+	args, err := json.Marshal(map[string]any{"id": "obs-timeout"})
+	if err != nil {
+		t.Fatalf("marshal args: %v", err)
+	}
+	params, err := json.Marshal(map[string]any{
+		"name":        "observation.read",
+		"arguments":   json.RawMessage(args),
+		"deadline_ms": int64(5),
+	})
+	if err != nil {
+		t.Fatalf("marshal params: %v", err)
+	}
+
+	resp := server.Handle(context.Background(), mcp.Request{JSONRPC: "2.0", ID: "1", Method: "tools/call", Params: params})
+	if resp.Error == nil || resp.Error.Data == nil {
+		t.Fatalf("expected mcp timeout error")
+	}
+	if resp.Error.Data.Code != "timeout" {
+		t.Fatalf("expected timeout code, got %s", resp.Error.Data.Code)
+	}
+}
+
+func TestMCPCanceledMapping(t *testing.T) {
+	repo := &blockingObservationRepo{wait: 50 * time.Millisecond}
+	service := domain.NewObservationService(repo, nil, nil, nil, nil)
+	appInstance := &app.App{ObservationService: service}
+	server := mcp.NewServer(appInstance)
+
+	args, err := json.Marshal(map[string]any{"id": "obs-canceled"})
+	if err != nil {
+		t.Fatalf("marshal args: %v", err)
+	}
+	params, err := json.Marshal(map[string]any{
+		"name":      "observation.read",
+		"arguments": json.RawMessage(args),
+	})
+	if err != nil {
+		t.Fatalf("marshal params: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	resp := server.Handle(ctx, mcp.Request{JSONRPC: "2.0", ID: "1", Method: "tools/call", Params: params})
+	if resp.Error == nil || resp.Error.Data == nil {
+		t.Fatalf("expected mcp canceled error")
+	}
+	if resp.Error.Data.Code != "canceled" {
+		t.Fatalf("expected canceled code, got %s", resp.Error.Data.Code)
 	}
 }
 
@@ -232,4 +291,37 @@ func asString(value any) string {
 
 func strPtr(value string) *string {
 	return &value
+}
+
+type blockingObservationRepo struct {
+	wait time.Duration
+}
+
+func (r *blockingObservationRepo) Create(ctx context.Context, observation domain.Observation) (domain.Observation, error) {
+	return domain.Observation{}, errors.New("unexpected Create call")
+}
+
+func (r *blockingObservationRepo) GetByID(ctx context.Context, id string, includeDeleted bool) (domain.Observation, error) {
+	select {
+	case <-ctx.Done():
+		return domain.Observation{}, ctx.Err()
+	case <-time.After(r.wait):
+		return domain.Observation{}, errors.New("deadline not enforced")
+	}
+}
+
+func (r *blockingObservationRepo) Update(ctx context.Context, observation domain.Observation) (domain.Observation, error) {
+	return domain.Observation{}, errors.New("unexpected Update call")
+}
+
+func (r *blockingObservationRepo) List(ctx context.Context, filter domain.ObservationListFilter) ([]domain.Observation, error) {
+	return nil, errors.New("unexpected List call")
+}
+
+func (r *blockingObservationRepo) SoftDelete(ctx context.Context, id string, deletedAt time.Time) (domain.Observation, error) {
+	return domain.Observation{}, errors.New("unexpected SoftDelete call")
+}
+
+func (r *blockingObservationRepo) FindByContent(ctx context.Context, content string, project string, includeDeleted bool) ([]domain.Observation, error) {
+	return nil, errors.New("unexpected FindByContent call")
 }
