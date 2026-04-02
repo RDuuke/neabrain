@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebFetch(domain:github.com)",
+      "Bash(rtk git:*)",
+      "Bash(git:*)",
+      "Bash(go build:*)",
+      "Bash(go test:*)",
+      "WebFetch(domain:api.github.com)",
+      "Read(//c/tmp/**)",
+      "Bash(curl -s https://raw.githubusercontent.com/Gentleman-Programming/engram/main/internal/mcp/mcp.go)",
+      "Bash(sed -n '600,1209p')",
+      "Read(//tmp/**)",
+      "Bash(curl:*)"
+    ]
+  }
+}

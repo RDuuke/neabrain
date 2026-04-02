@@ -260,6 +260,25 @@ func (r *inMemoryObservationRepo) FindByContent(ctx context.Context, content str
 	return results, nil
 }
 
+func (r *inMemoryObservationRepo) GetStats(ctx context.Context) (domain.ObservationStats, error) {
+	var stats domain.ObservationStats
+	for _, obs := range r.items {
+		if obs.DeletedAt == nil {
+			stats.Active++
+		} else {
+			stats.Deleted++
+		}
+	}
+	projects := map[string]struct{}{}
+	for _, obs := range r.items {
+		if obs.DeletedAt == nil && obs.Project != "" {
+			projects[obs.Project] = struct{}{}
+		}
+	}
+	stats.Projects = len(projects)
+	return stats, nil
+}
+
 func (r *inMemoryObservationRepo) ListProjects(ctx context.Context) ([]domain.ProjectSummary, error) {
 	counts := map[string]int{}
 	for _, obs := range r.items {

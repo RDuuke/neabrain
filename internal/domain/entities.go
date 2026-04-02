@@ -51,3 +51,10 @@ type ProjectSummary struct {
 	Name  string
 	Count int
 }
+
+// ObservationStats holds aggregate counts about the observation store.
+type ObservationStats struct {
+	Active   int
+	Deleted  int
+	Projects int
+}

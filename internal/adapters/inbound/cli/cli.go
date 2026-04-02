@@ -548,7 +548,11 @@ func runMCP(ctx context.Context, args []string, out io.Writer, errOut io.Writer)
 	fs := flag.NewFlagSet("mcp", flag.ContinueOnError)
 	fs.SetOutput(errOut)
 
-	var configFlags configFlagSet
+	var (
+		profile     string
+		configFlags configFlagSet
+	)
+	fs.StringVar(&profile, "profile", "agent", "Tool profile to expose: agent (default), admin, all")
 	configFlags.bind(fs)
 
 	if err := fs.Parse(args); err != nil {
@@ -564,9 +568,9 @@ func runMCP(ctx context.Context, args []string, out io.Writer, errOut io.Writer)
 		_ = appInstance.Close()
 	}()
 
-	appInstance.Logger.Info("mcp server start", nil)
+	appInstance.Logger.Info("mcp server start", map[string]any{"profile": profile})
 	appInstance.Metrics.Inc("adapter.mcp.listen")
-	server := mcp.NewServer(appInstance)
+	server := mcp.NewServerWithProfile(appInstance, mcp.Profile(profile))
 	if err := server.Serve(ctx, os.Stdin, out); err != nil {
 		return handleError(err, errOut)
 	}

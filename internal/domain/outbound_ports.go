@@ -15,6 +15,7 @@ type ObservationRepository interface {
 	FindByContent(ctx context.Context, content string, project string, includeDeleted bool) ([]Observation, error)
 	ListProjects(ctx context.Context) ([]ProjectSummary, error)
 	RenameProject(ctx context.Context, oldName, newName string) (int, error)
+	GetStats(ctx context.Context) (ObservationStats, error)
 }
 
 // TopicRepository defines persistence operations for topics.

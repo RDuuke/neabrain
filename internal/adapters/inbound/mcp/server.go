@@ -13,14 +13,35 @@ import (
 	"neabrain/internal/domain"
 )
 
+// Profile controls which tools are exposed by the MCP server.
+// "agent" — read/write tools useful for AI agents (default).
+// "admin" — agent tools plus destructive/administrative tools.
+// "all"   — all registered tools (alias for admin).
+type Profile string
+
+const (
+	ProfileAgent Profile = "agent"
+	ProfileAdmin Profile = "admin"
+	ProfileAll   Profile = "all"
+)
+
 // Server handles MCP-style tool requests over JSON-RPC.
 type Server struct {
-	app *app.App
+	app     *app.App
+	profile Profile
 }
 
-// NewServer constructs a MCP server bound to the app services.
+// NewServer constructs a MCP server with the default (agent) profile.
 func NewServer(appInstance *app.App) *Server {
-	return &Server{app: appInstance}
+	return &Server{app: appInstance, profile: ProfileAgent}
+}
+
+// NewServerWithProfile constructs a MCP server with an explicit profile.
+func NewServerWithProfile(appInstance *app.App, profile Profile) *Server {
+	if profile == "" {
+		profile = ProfileAgent
+	}
+	return &Server{app: appInstance, profile: profile}
 }
 
 // Serve processes JSON-RPC requests from in and writes responses to out.
@@ -80,7 +101,7 @@ func (s *Server) Handle(ctx context.Context, req Request) Response {
 	case "initialized", "notifications/initialized":
 		return Response{JSONRPC: "2.0", ID: req.ID, Result: map[string]any{}}
 	case "tools/list":
-		return Response{JSONRPC: "2.0", ID: req.ID, Result: toolsListResult{Tools: toolDefinitions()}}
+		return Response{JSONRPC: "2.0", ID: req.ID, Result: toolsListResult{Tools: s.filteredTools()}}
 	case "tools/call":
 		return s.handleToolsCall(ctx, req)
 	default:
@@ -123,10 +144,21 @@ type toolsListResult struct {
 	Tools []ToolDefinition `json:"tools"`
 }
 
+// ToolAnnotations provides MCP 2024-11-05 hints to clients.
+type ToolAnnotations struct {
+	ReadOnlyHint    bool `json:"readOnlyHint,omitempty"`
+	DestructiveHint bool `json:"destructiveHint,omitempty"`
+	IdempotentHint  bool `json:"idempotentHint,omitempty"`
+}
+
+// ToolDefinition describes an MCP tool including schema and behavioral hints.
 type ToolDefinition struct {
-	Name        string         `json:"name"`
-	Description string         `json:"description"`
-	InputSchema map[string]any `json:"inputSchema"`
+	Name        string          `json:"name"`
+	Description string          `json:"description"`
+	InputSchema map[string]any  `json:"inputSchema"`
+	Annotations ToolAnnotations `json:"annotations,omitempty"`
+	// adminOnly marks tools hidden from the agent profile.
+	adminOnly bool `json:"-"`
 }
 
 type observationCreateArgs struct {
@@ -221,6 +253,18 @@ type nbnProjectsRenameArgs struct {
 	To   string `json:"to"`
 }
 
+type nbnMergeProjectsArgs struct {
+	From []string `json:"from"`
+	To   string   `json:"to"`
+}
+
+type nbnCapturePassiveArgs struct {
+	Text     string   `json:"text"`
+	Project  string   `json:"project"`
+	TopicKey string   `json:"topic_key"`
+	Tags     []string `json:"tags"`
+}
+
 func (s *Server) handleToolsCall(ctx context.Context, req Request) Response {
 	var params toolsCallParams
 	if err := json.Unmarshal(req.Params, &params); err != nil {
@@ -286,6 +330,43 @@ func (s *Server) handleToolsCall(ctx context.Context, req Request) Response {
 	}
 
 	switch name {
+	case "nbn_stats":
+		stats, err := s.app.ObservationService.GetStats(callCtx)
+		if err != nil {
+			return Response{JSONRPC: "2.0", ID: req.ID, Error: rpcErrorFrom(err)}
+		}
+		return Response{JSONRPC: "2.0", ID: req.ID, Result: stats}
+	case "nbn_capture_passive":
+		var args nbnCapturePassiveArgs
+		if err := json.Unmarshal(params.Arguments, &args); err != nil {
+			return Response{JSONRPC: "2.0", ID: req.ID, Error: &RPCError{Code: -32602, Message: "invalid nbn_capture_passive args"}}
+		}
+		tags := args.Tags
+		if len(tags) == 0 {
+			tags = []string{"passive"}
+		}
+		created, err := s.app.ObservationService.Create(callCtx, domain.ObservationCreateInput{
+			Content:        strings.TrimSpace(args.Text),
+			Project:        pickProject(args.Project, s.app.Config.DefaultProject),
+			TopicKey:       args.TopicKey,
+			Tags:           tags,
+			Source:         "passive",
+			AllowDuplicate: false,
+		})
+		if err != nil {
+			return Response{JSONRPC: "2.0", ID: req.ID, Error: rpcErrorFrom(err)}
+		}
+		return Response{JSONRPC: "2.0", ID: req.ID, Result: created}
+	case "nbn_merge_projects":
+		var args nbnMergeProjectsArgs
+		if err := json.Unmarshal(params.Arguments, &args); err != nil {
+			return Response{JSONRPC: "2.0", ID: req.ID, Error: &RPCError{Code: -32602, Message: "invalid nbn_merge_projects args"}}
+		}
+		count, err := s.app.ObservationService.MergeProjects(callCtx, args.From, args.To)
+		if err != nil {
+			return Response{JSONRPC: "2.0", ID: req.ID, Error: rpcErrorFrom(err)}
+		}
+		return Response{JSONRPC: "2.0", ID: req.ID, Result: map[string]any{"merged": count}}
 	case "nbn_export":
 		var args nbnExportArgs
 		if err := json.Unmarshal(params.Arguments, &args); err != nil {
@@ -486,143 +567,215 @@ func (s *Server) handleToolsCall(ctx context.Context, req Request) Response {
 	}
 }
 
+// filteredTools returns the tool list appropriate for the server profile.
+func (s *Server) filteredTools() []ToolDefinition {
+	all := toolDefinitions()
+	if s.profile == ProfileAdmin || s.profile == ProfileAll {
+		return all
+	}
+	out := make([]ToolDefinition, 0, len(all))
+	for _, t := range all {
+		if !t.adminOnly {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
 func toolDefinitions() []ToolDefinition {
+	ro := ToolAnnotations{ReadOnlyHint: true}
+	write := ToolAnnotations{}
+	idempotent := ToolAnnotations{IdempotentHint: true}
+	destructive := ToolAnnotations{DestructiveHint: true}
+
+	obsCreateSchema := schemaObject(map[string]any{
+		"content":         schemaString(),
+		"project":         schemaString(),
+		"topic_key":       schemaString(),
+		"tags":            schemaStringArray(),
+		"source":          schemaString(),
+		"metadata":        schemaObjectAny(),
+		"allow_duplicate": schemaBool(),
+	}, "content")
+	obsReadSchema := schemaObject(map[string]any{
+		"id":              schemaString(),
+		"include_deleted": schemaBool(),
+	}, "id")
+	obsUpdateSchema := schemaObject(map[string]any{
+		"id":        schemaString(),
+		"content":   schemaString(),
+		"project":   schemaString(),
+		"topic_key": schemaString(),
+		"tags":      schemaStringArray(),
+		"source":    schemaString(),
+		"metadata":  schemaObjectAny(),
+	}, "id")
+	obsListSchema := schemaObject(map[string]any{
+		"project":         schemaString(),
+		"topic_key":       schemaString(),
+		"tags":            schemaStringArray(),
+		"include_deleted": schemaBool(),
+	})
+	obsDeleteSchema := schemaObject(map[string]any{"id": schemaString()}, "id")
+	searchSchema := schemaObject(map[string]any{
+		"query":           schemaString(),
+		"project":         schemaString(),
+		"topic_key":       schemaString(),
+		"tags":            schemaStringArray(),
+		"include_deleted": schemaBool(),
+	}, "query")
+	topicUpsertSchema := schemaObject(map[string]any{
+		"topic_key":   schemaString(),
+		"name":        schemaString(),
+		"description": schemaString(),
+		"metadata":    schemaObjectAny(),
+	}, "topic_key")
+
 	return []ToolDefinition{
-		{Name: "observation.create", Description: "Create an observation", InputSchema: schemaObject(map[string]any{
-			"content":         schemaString(),
-			"project":         schemaString(),
-			"topic_key":       schemaString(),
-			"tags":            schemaStringArray(),
-			"source":          schemaString(),
-			"metadata":        schemaObjectAny(),
-			"allow_duplicate": schemaBool(),
-		}, "content")},
-		{Name: "nbn_observation_create", Description: "Alias for observation.create", InputSchema: schemaObject(map[string]any{
-			"content":         schemaString(),
-			"project":         schemaString(),
-			"topic_key":       schemaString(),
-			"tags":            schemaStringArray(),
-			"source":          schemaString(),
-			"metadata":        schemaObjectAny(),
-			"allow_duplicate": schemaBool(),
-		}, "content")},
-		{Name: "observation.read", Description: "Read an observation by id", InputSchema: schemaObject(map[string]any{
-			"id":              schemaString(),
-			"include_deleted": schemaBool(),
-		}, "id")},
-		{Name: "nbn_observation_read", Description: "Alias for observation.read", InputSchema: schemaObject(map[string]any{
-			"id":              schemaString(),
-			"include_deleted": schemaBool(),
-		}, "id")},
-		{Name: "observation.update", Description: "Update an observation", InputSchema: schemaObject(map[string]any{
-			"id":        schemaString(),
-			"content":   schemaString(),
-			"project":   schemaString(),
-			"topic_key": schemaString(),
-			"tags":      schemaStringArray(),
-			"source":    schemaString(),
-			"metadata":  schemaObjectAny(),
-		}, "id")},
-		{Name: "nbn_observation_update", Description: "Alias for observation.update", InputSchema: schemaObject(map[string]any{
-			"id":        schemaString(),
-			"content":   schemaString(),
-			"project":   schemaString(),
-			"topic_key": schemaString(),
-			"tags":      schemaStringArray(),
-			"source":    schemaString(),
-			"metadata":  schemaObjectAny(),
-		}, "id")},
-		{Name: "observation.list", Description: "List observations", InputSchema: schemaObject(map[string]any{
-			"project":         schemaString(),
-			"topic_key":       schemaString(),
-			"tags":            schemaStringArray(),
-			"include_deleted": schemaBool(),
-		})},
-		{Name: "nbn_observation_list", Description: "Alias for observation.list", InputSchema: schemaObject(map[string]any{
-			"project":         schemaString(),
-			"topic_key":       schemaString(),
-			"tags":            schemaStringArray(),
-			"include_deleted": schemaBool(),
-		})},
-		{Name: "observation.delete", Description: "Soft delete an observation", InputSchema: schemaObject(map[string]any{
-			"id": schemaString(),
-		}, "id")},
-		{Name: "nbn_observation_delete", Description: "Alias for observation.delete", InputSchema: schemaObject(map[string]any{
-			"id": schemaString(),
-		}, "id")},
-		{Name: "search", Description: "Search observations", InputSchema: schemaObject(map[string]any{
-			"query":           schemaString(),
-			"project":         schemaString(),
-			"topic_key":       schemaString(),
-			"tags":            schemaStringArray(),
-			"include_deleted": schemaBool(),
-		}, "query")},
-		{Name: "nbn_search", Description: "Alias for search", InputSchema: schemaObject(map[string]any{
-			"query":           schemaString(),
-			"project":         schemaString(),
-			"topic_key":       schemaString(),
-			"tags":            schemaStringArray(),
-			"include_deleted": schemaBool(),
-		}, "query")},
-		{Name: "nbn_context", Description: "Alias for search (context)", InputSchema: schemaObject(map[string]any{
-			"query":           schemaString(),
-			"project":         schemaString(),
-			"topic_key":       schemaString(),
-			"tags":            schemaStringArray(),
-			"include_deleted": schemaBool(),
-		}, "query")},
-		{Name: "topic.upsert", Description: "Upsert a topic by key", InputSchema: schemaObject(map[string]any{
-			"topic_key":   schemaString(),
-			"name":        schemaString(),
-			"description": schemaString(),
-			"metadata":    schemaObjectAny(),
-		}, "topic_key")},
-		{Name: "nbn_topic_upsert", Description: "Alias for topic.upsert", InputSchema: schemaObject(map[string]any{
-			"topic_key":   schemaString(),
-			"name":        schemaString(),
-			"description": schemaString(),
-			"metadata":    schemaObjectAny(),
-		}, "topic_key")},
-		{Name: "session.open", Description: "Open a session", InputSchema: schemaObject(map[string]any{
-			"disclosure_level": schemaString(),
-		}, "disclosure_level")},
-		{Name: "nbn_session_open", Description: "Alias for session.open", InputSchema: schemaObject(map[string]any{
-			"disclosure_level": schemaString(),
-		}, "disclosure_level")},
-		{Name: "session.resume", Description: "Resume a session", InputSchema: schemaObject(map[string]any{
-			"id": schemaString(),
-		}, "id")},
-		{Name: "nbn_session_resume", Description: "Alias for session.resume", InputSchema: schemaObject(map[string]any{
-			"id": schemaString(),
-		}, "id")},
-		{Name: "session.update_disclosure", Description: "Update disclosure level", InputSchema: schemaObject(map[string]any{
-			"id":               schemaString(),
-			"disclosure_level": schemaString(),
-		}, "id", "disclosure_level")},
-		{Name: "nbn_session_update_disclosure", Description: "Alias for session.update_disclosure", InputSchema: schemaObject(map[string]any{
-			"id":               schemaString(),
-			"disclosure_level": schemaString(),
-		}, "id", "disclosure_level")},
-		{Name: "config.show", Description: "Show effective config", InputSchema: schemaObject(map[string]any{})},
-		{Name: "nbn_config_show", Description: "Alias for config.show", InputSchema: schemaObject(map[string]any{})},
-		{Name: "nbn_session_summary", Description: "Store a session summary", InputSchema: schemaObject(map[string]any{
-			"summary":   schemaString(),
-			"project":   schemaString(),
-			"topic_key": schemaString(),
-			"tags":      schemaStringArray(),
-			"metadata":  schemaObjectAny(),
-		}, "summary")},
-		{Name: "nbn_export", Description: "Export observations as a JSON list", InputSchema: schemaObject(map[string]any{
-			"project":         schemaString(),
-			"topic_key":       schemaString(),
-			"tags":            schemaStringArray(),
-			"include_deleted": schemaBool(),
-		})},
-		{Name: "nbn_projects_list", Description: "List projects with observation counts", InputSchema: schemaObject(map[string]any{})},
-		{Name: "nbn_projects_rename", Description: "Rename a project across all observations", InputSchema: schemaObject(map[string]any{
-			"from": schemaString(),
-			"to":   schemaString(),
-		}, "from", "to")},
+		// ── Observations ────────────────────────────────────────────────────────
+		{Name: "observation.create", Annotations: write,
+			Description: "Persist a memory observation. Include what happened, why it matters, and where in the codebase. Use topic_key to group related observations so they can evolve together over time.",
+			InputSchema: obsCreateSchema},
+		{Name: "nbn_observation_create", Annotations: write,
+			Description: "Alias for observation.create.",
+			InputSchema: obsCreateSchema},
+
+		{Name: "observation.read", Annotations: ro,
+			Description: "Retrieve full content of a single observation by ID. Use after search when the preview is truncated.",
+			InputSchema: obsReadSchema},
+		{Name: "nbn_observation_read", Annotations: ro,
+			Description: "Alias for observation.read.",
+			InputSchema: obsReadSchema},
+
+		{Name: "observation.update", Annotations: idempotent,
+			Description: "Update fields of an existing observation. Only supplied fields are changed.",
+			InputSchema: obsUpdateSchema},
+		{Name: "nbn_observation_update", Annotations: idempotent,
+			Description: "Alias for observation.update.",
+			InputSchema: obsUpdateSchema},
+
+		{Name: "observation.list", Annotations: ro,
+			Description: "List observations with optional filters. Returns full objects; prefer nbn_search for keyword queries.",
+			InputSchema: obsListSchema},
+		{Name: "nbn_observation_list", Annotations: ro,
+			Description: "Alias for observation.list.",
+			InputSchema: obsListSchema},
+
+		{Name: "observation.delete", Annotations: ToolAnnotations{DestructiveHint: true},
+			Description: "Soft-delete an observation. It remains queryable with include_deleted=true.",
+			InputSchema: obsDeleteSchema},
+		{Name: "nbn_observation_delete", Annotations: ToolAnnotations{DestructiveHint: true},
+			Description: "Alias for observation.delete.",
+			InputSchema: obsDeleteSchema},
+
+		// ── Search ──────────────────────────────────────────────────────────────
+		{Name: "search", Annotations: ro,
+			Description: "Full-text search across all observations. Returns observations ranked by relevance. Filter by project, topic_key, or tags to narrow scope.",
+			InputSchema: searchSchema},
+		{Name: "nbn_search", Annotations: ro,
+			Description: "Alias for search.",
+			InputSchema: searchSchema},
+		{Name: "nbn_context", Annotations: ro,
+			Description: "Retrieve relevant context for the current task. Use before starting work to recall prior decisions and patterns. Same as search but semantically scoped to context retrieval.",
+			InputSchema: searchSchema},
+
+		// ── Topics ──────────────────────────────────────────────────────────────
+		{Name: "topic.upsert", Annotations: idempotent,
+			Description: "Create or update a named topic. Topics group observations by domain (e.g. 'auth', 'database-schema'). Use a stable topic_key across sessions.",
+			InputSchema: topicUpsertSchema},
+		{Name: "nbn_topic_upsert", Annotations: idempotent,
+			Description: "Alias for topic.upsert.",
+			InputSchema: topicUpsertSchema},
+
+		// ── Sessions ────────────────────────────────────────────────────────────
+		{Name: "session.open", Annotations: write,
+			Description: "Open a new session to track a work context. disclosure_level controls what context is shared back (e.g. 'low', 'high').",
+			InputSchema: schemaObject(map[string]any{"disclosure_level": schemaString()}, "disclosure_level")},
+		{Name: "nbn_session_open", Annotations: write,
+			Description: "Alias for session.open.",
+			InputSchema: schemaObject(map[string]any{"disclosure_level": schemaString()}, "disclosure_level")},
+
+		{Name: "session.resume", Annotations: ro,
+			Description: "Resume a previously opened session by ID.",
+			InputSchema: schemaObject(map[string]any{"id": schemaString()}, "id")},
+		{Name: "nbn_session_resume", Annotations: ro,
+			Description: "Alias for session.resume.",
+			InputSchema: schemaObject(map[string]any{"id": schemaString()}, "id")},
+
+		{Name: "session.update_disclosure", Annotations: idempotent,
+			Description: "Change the disclosure level of an open session.",
+			InputSchema: schemaObject(map[string]any{
+				"id":               schemaString(),
+				"disclosure_level": schemaString(),
+			}, "id", "disclosure_level")},
+		{Name: "nbn_session_update_disclosure", Annotations: idempotent,
+			Description: "Alias for session.update_disclosure.",
+			InputSchema: schemaObject(map[string]any{
+				"id":               schemaString(),
+				"disclosure_level": schemaString(),
+			}, "id", "disclosure_level")},
+
+		// ── Config ──────────────────────────────────────────────────────────────
+		{Name: "config.show", Annotations: ro,
+			Description: "Show the effective configuration (storage paths, default project, dedupe policy).",
+			InputSchema: schemaObject(map[string]any{})},
+		{Name: "nbn_config_show", Annotations: ro,
+			Description: "Alias for config.show.",
+			InputSchema: schemaObject(map[string]any{})},
+
+		// ── OpenCode helpers ─────────────────────────────────────────────────────
+		{Name: "nbn_session_summary", Annotations: write,
+			Description: "Store a structured end-of-session summary. Call at compaction time. Include: Goal, Key Decisions, Discoveries, Files Changed.",
+			InputSchema: schemaObject(map[string]any{
+				"summary":   schemaString(),
+				"project":   schemaString(),
+				"topic_key": schemaString(),
+				"tags":      schemaStringArray(),
+				"metadata":  schemaObjectAny(),
+			}, "summary")},
+
+		// ── Passive capture ──────────────────────────────────────────────────────
+		{Name: "nbn_capture_passive", Annotations: write,
+			Description: "Extract and store a learning from text without explicit structuring. Use when you notice something worth preserving mid-conversation that doesn't need full observation metadata.",
+			InputSchema: schemaObject(map[string]any{
+				"text":      schemaString(),
+				"project":   schemaString(),
+				"topic_key": schemaString(),
+				"tags":      schemaStringArray(),
+			}, "text")},
+
+		// ── Export & Projects ────────────────────────────────────────────────────
+		{Name: "nbn_export", Annotations: ro,
+			Description: "Export observations as a JSON array. Use for backup, migration, or sharing memory across environments.",
+			InputSchema: schemaObject(map[string]any{
+				"project":         schemaString(),
+				"topic_key":       schemaString(),
+				"tags":            schemaStringArray(),
+				"include_deleted": schemaBool(),
+			})},
+
+		{Name: "nbn_projects_list", Annotations: ro,
+			Description: "List all active projects with their observation counts.",
+			InputSchema: schemaObject(map[string]any{})},
+
+		{Name: "nbn_projects_rename", Annotations: ToolAnnotations{IdempotentHint: true, DestructiveHint: true},
+			Description: "Rename a single project across all observations.",
+			InputSchema: schemaObject(map[string]any{
+				"from": schemaString(),
+				"to":   schemaString(),
+			}, "from", "to")},
+
+		// ── Admin tools (hidden from agent profile) ──────────────────────────────
+		{Name: "nbn_stats", Annotations: ro, adminOnly: true,
+			Description: "Return aggregate counts: active observations, soft-deleted observations, and distinct projects.",
+			InputSchema: schemaObject(map[string]any{})},
+
+		{Name: "nbn_merge_projects", Annotations: destructive, adminOnly: true,
+			Description: "Merge multiple project name variants into one target project. All observations in 'from' projects are reassigned to 'to'. Irreversible.",
+			InputSchema: schemaObject(map[string]any{
+				"from": schemaStringArray(),
+				"to":   schemaString(),
+			}, "from", "to")},
 	}
 }
 

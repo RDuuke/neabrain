@@ -85,6 +85,12 @@ func (o *observedObservationRepository) SoftDelete(ctx context.Context, id strin
 	return o.next.SoftDelete(ctx, id, deletedAt)
 }
 
+func (o *observedObservationRepository) GetStats(ctx context.Context) (domain.ObservationStats, error) {
+	o.metrics.Inc("repo.observation.stats")
+	o.logger.Info("repo observation stats", nil)
+	return o.next.GetStats(ctx)
+}
+
 func (o *observedObservationRepository) ListProjects(ctx context.Context) ([]domain.ProjectSummary, error) {
 	o.metrics.Inc("repo.observation.list_projects")
 	o.logger.Info("repo observation list projects", nil)

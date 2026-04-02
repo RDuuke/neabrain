@@ -218,6 +218,20 @@ func (r *ObservationRepository) RenameProject(ctx context.Context, oldName, newN
 	return int(affected), err
 }
 
+func (r *ObservationRepository) GetStats(ctx context.Context) (domain.ObservationStats, error) {
+	var stats domain.ObservationStats
+	row := r.db.QueryRowContext(ctx,
+		`SELECT
+			COUNT(*) FILTER (WHERE deleted_at IS NULL),
+			COUNT(*) FILTER (WHERE deleted_at IS NOT NULL),
+			COUNT(DISTINCT project) FILTER (WHERE deleted_at IS NULL AND project != '')
+		FROM observations`)
+	if err := row.Scan(&stats.Active, &stats.Deleted, &stats.Projects); err != nil {
+		return domain.ObservationStats{}, err
+	}
+	return stats, nil
+}
+
 func (r *ObservationRepository) FindByContent(ctx context.Context, content string, project string, includeDeleted bool) ([]domain.Observation, error) {
 	query := `SELECT id, content, created_at, updated_at, deleted_at, project, topic_key, tags, source, metadata
 		FROM observations WHERE content = ? AND project = ?`

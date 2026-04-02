@@ -333,3 +333,7 @@ func (r *blockingObservationRepo) ListProjects(ctx context.Context) ([]domain.Pr
 func (r *blockingObservationRepo) RenameProject(ctx context.Context, oldName, newName string) (int, error) {
 	return 0, errors.New("unexpected RenameProject call")
 }
+
+func (r *blockingObservationRepo) GetStats(ctx context.Context) (domain.ObservationStats, error) {
+	return domain.ObservationStats{}, errors.New("unexpected GetStats call")
+}

@@ -162,8 +162,32 @@ func (s *ObservationService) List(ctx context.Context, filter ObservationListFil
 	return s.repo.List(ctx, filter)
 }
 
+func (s *ObservationService) GetStats(ctx context.Context) (ObservationStats, error) {
+	return s.repo.GetStats(ctx)
+}
+
 func (s *ObservationService) ListProjects(ctx context.Context) ([]ProjectSummary, error) {
 	return s.repo.ListProjects(ctx)
+}
+
+func (s *ObservationService) MergeProjects(ctx context.Context, from []string, to string) (int, error) {
+	to = strings.TrimSpace(to)
+	if to == "" {
+		return 0, NewInvalidInput("target project name is required")
+	}
+	total := 0
+	for _, src := range from {
+		src = strings.TrimSpace(src)
+		if src == "" || src == to {
+			continue
+		}
+		n, err := s.repo.RenameProject(ctx, src, to)
+		if err != nil {
+			return total, err
+		}
+		total += n
+	}
+	return total, nil
 }
 
 func (s *ObservationService) RenameProject(ctx context.Context, oldName, newName string) (int, error) {
