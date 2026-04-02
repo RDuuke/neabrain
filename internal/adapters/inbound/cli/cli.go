@@ -9,6 +9,8 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 
 	httpadapter "neabrain/internal/adapters/inbound/http"
@@ -50,6 +52,10 @@ func Run(ctx context.Context, args []string, out io.Writer, errOut io.Writer) in
 		return runMCP(ctx, args[1:], out, errOut)
 	case "tui":
 		return runTUI(ctx, args[1:], out, errOut)
+	case "projects":
+		return runProjects(ctx, args[1:], out, errOut)
+	case "setup":
+		return runSetup(args[1:], out, errOut)
 	default:
 		writeUsage(out)
 		return 2
@@ -73,6 +79,10 @@ func runObservation(ctx context.Context, args []string, out io.Writer, errOut io
 		return runObservationList(ctx, args[1:], out, errOut)
 	case "delete":
 		return runObservationDelete(ctx, args[1:], out, errOut)
+	case "export":
+		return runObservationExport(ctx, args[1:], out, errOut)
+	case "import":
+		return runObservationImport(ctx, args[1:], out, errOut)
 	default:
 		writeObservationUsage(out)
 		return 2
@@ -567,6 +577,262 @@ func runTUI(ctx context.Context, args []string, out io.Writer, errOut io.Writer)
 	return tui.Run(ctx, args, os.Stdin, out, errOut, Run)
 }
 
+func runObservationExport(ctx context.Context, args []string, out io.Writer, errOut io.Writer) int {
+	fs := flag.NewFlagSet("observation export", flag.ContinueOnError)
+	fs.SetOutput(errOut)
+
+	var (
+		project        string
+		topicKey       string
+		tags           optionalCSV
+		includeDeleted bool
+		outputFile     string
+		configFlags    configFlagSet
+	)
+	fs.StringVar(&project, "project", "", "Filter by project")
+	fs.StringVar(&topicKey, "topic", "", "Filter by topic key")
+	fs.Var(&tags, "tags", "Comma-separated tags filter")
+	fs.BoolVar(&includeDeleted, "include-deleted", false, "Include soft deleted observations")
+	fs.StringVar(&outputFile, "output", "", "Write to file instead of stdout")
+	configFlags.bind(fs)
+
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+
+	overrides := configFlags.toOverrides()
+	err := withApp(ctx, overrides, "observation.export", func(a *app.App) error {
+		observations, err := a.ObservationService.List(ctx, domain.ObservationListFilter{
+			Project:        pickProject(project, a.Config.DefaultProject),
+			TopicKey:       topicKey,
+			Tags:           tags.values,
+			IncludeDeleted: includeDeleted,
+		})
+		if err != nil {
+			return err
+		}
+		data, err := json.MarshalIndent(observations, "", "  ")
+		if err != nil {
+			return err
+		}
+		if outputFile != "" {
+			if err := os.WriteFile(outputFile, append(data, '\n'), 0644); err != nil {
+				return fmt.Errorf("write file: %w", err)
+			}
+			fmt.Fprintf(out, "exported %d observations to %s\n", len(observations), outputFile)
+			return nil
+		}
+		_, err = fmt.Fprintln(out, string(data))
+		return err
+	})
+	return handleError(err, errOut)
+}
+
+func runObservationImport(ctx context.Context, args []string, out io.Writer, errOut io.Writer) int {
+	fs := flag.NewFlagSet("observation import", flag.ContinueOnError)
+	fs.SetOutput(errOut)
+
+	var (
+		inputFile      string
+		allowDuplicate bool
+		configFlags    configFlagSet
+	)
+	fs.StringVar(&inputFile, "input", "", "JSON file to import (default: stdin)")
+	fs.BoolVar(&allowDuplicate, "allow-duplicate", false, "Allow importing duplicates")
+	configFlags.bind(fs)
+
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+
+	overrides := configFlags.toOverrides()
+	err := withApp(ctx, overrides, "observation.import", func(a *app.App) error {
+		var data []byte
+		var readErr error
+		if inputFile != "" {
+			data, readErr = os.ReadFile(inputFile)
+		} else {
+			data, readErr = io.ReadAll(os.Stdin)
+		}
+		if readErr != nil {
+			return fmt.Errorf("read input: %w", readErr)
+		}
+
+		var observations []domain.Observation
+		if err := json.Unmarshal(data, &observations); err != nil {
+			return fmt.Errorf("parse JSON: %w", err)
+		}
+
+		var imported, skipped int
+		for _, obs := range observations {
+			_, err := a.ObservationService.Create(ctx, domain.ObservationCreateInput{
+				Content:        obs.Content,
+				Project:        obs.Project,
+				TopicKey:       obs.TopicKey,
+				Tags:           obs.Tags,
+				Source:         obs.Source,
+				Metadata:       obs.Metadata,
+				AllowDuplicate: allowDuplicate,
+			})
+			if err != nil {
+				var domErr domain.DomainError
+				if errors.As(err, &domErr) && domErr.Code == domain.ErrorConflict {
+					skipped++
+					continue
+				}
+				return err
+			}
+			imported++
+		}
+		fmt.Fprintf(out, "imported %d, skipped %d duplicates\n", imported, skipped)
+		return nil
+	})
+	return handleError(err, errOut)
+}
+
+func runProjects(ctx context.Context, args []string, out io.Writer, errOut io.Writer) int {
+	if len(args) == 0 {
+		writeProjectsUsage(out)
+		return 2
+	}
+
+	switch args[0] {
+	case "list":
+		return runProjectsList(ctx, args[1:], out, errOut)
+	case "rename":
+		return runProjectsRename(ctx, args[1:], out, errOut)
+	default:
+		writeProjectsUsage(out)
+		return 2
+	}
+}
+
+func runProjectsList(ctx context.Context, args []string, out io.Writer, errOut io.Writer) int {
+	fs := flag.NewFlagSet("projects list", flag.ContinueOnError)
+	fs.SetOutput(errOut)
+
+	var configFlags configFlagSet
+	configFlags.bind(fs)
+
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+
+	overrides := configFlags.toOverrides()
+	err := withApp(ctx, overrides, "projects.list", func(a *app.App) error {
+		summaries, err := a.ObservationService.ListProjects(ctx)
+		if err != nil {
+			return err
+		}
+		return writeJSON(out, summaries)
+	})
+	return handleError(err, errOut)
+}
+
+func runProjectsRename(ctx context.Context, args []string, out io.Writer, errOut io.Writer) int {
+	fs := flag.NewFlagSet("projects rename", flag.ContinueOnError)
+	fs.SetOutput(errOut)
+
+	var (
+		oldName     string
+		newName     string
+		configFlags configFlagSet
+	)
+	fs.StringVar(&oldName, "from", "", "Current project name")
+	fs.StringVar(&newName, "to", "", "New project name")
+	configFlags.bind(fs)
+
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+
+	overrides := configFlags.toOverrides()
+	err := withApp(ctx, overrides, "projects.rename", func(a *app.App) error {
+		count, err := a.ObservationService.RenameProject(ctx, oldName, newName)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(out, "renamed %d observations from %q to %q\n", count, oldName, newName)
+		return nil
+	})
+	return handleError(err, errOut)
+}
+
+func runSetup(args []string, out io.Writer, errOut io.Writer) int {
+	if len(args) == 0 {
+		writeSetupUsage(out)
+		return 2
+	}
+
+	exe, err := os.Executable()
+	if err != nil {
+		exe = "neabrain"
+	}
+	exe = filepath.ToSlash(exe)
+
+	switch args[0] {
+	case "claude-code":
+		fmt.Fprintln(out, "Add to .claude/settings.json under mcpServers:")
+		fmt.Fprintln(out, "")
+		cfg := map[string]any{
+			"neabrain": map[string]any{
+				"type":    "stdio",
+				"command": exe,
+				"args":    []string{"mcp"},
+			},
+		}
+		data, _ := json.MarshalIndent(cfg, "", "  ")
+		fmt.Fprintln(out, string(data))
+	case "cursor":
+		fmt.Fprintln(out, "Add to .cursor/mcp.json:")
+		fmt.Fprintln(out, "")
+		cfg := map[string]any{
+			"mcpServers": map[string]any{
+				"neabrain": map[string]any{
+					"command": exe,
+					"args":    []string{"mcp"},
+				},
+			},
+		}
+		data, _ := json.MarshalIndent(cfg, "", "  ")
+		fmt.Fprintln(out, string(data))
+	case "vscode":
+		fmt.Fprintln(out, "Add to .vscode/mcp.json:")
+		fmt.Fprintln(out, "")
+		cfg := map[string]any{
+			"servers": map[string]any{
+				"neabrain": map[string]any{
+					"type":    "stdio",
+					"command": exe,
+					"args":    []string{"mcp"},
+				},
+			},
+		}
+		data, _ := json.MarshalIndent(cfg, "", "  ")
+		fmt.Fprintln(out, string(data))
+	case "opencode":
+		fmt.Fprintln(out, "Add to opencode.json under mcp.servers:")
+		fmt.Fprintln(out, "")
+		cfg := map[string]any{
+			"neabrain": map[string]any{
+				"type":    "local",
+				"command": []string{exe, "mcp"},
+			},
+		}
+		data, _ := json.MarshalIndent(cfg, "", "  ")
+		fmt.Fprintln(out, string(data))
+	default:
+		fmt.Fprintf(errOut, "unknown agent %q\n", args[0])
+		writeSetupUsage(out)
+		return 2
+	}
+
+	if runtime.GOOS == "windows" {
+		fmt.Fprintln(out, "\nNote: on Windows use the .exe path if neabrain is not in PATH.")
+	}
+	return 0
+}
+
 func withApp(ctx context.Context, overrides ports.ConfigOverrides, operation string, fn func(*app.App) error) error {
 	appInstance, err := app.Bootstrap(ctx, overrides)
 	if err != nil {
@@ -720,18 +986,28 @@ func writeUsage(out io.Writer) {
 	fmt.Fprintln(out, "neabrain <command> [args]")
 	fmt.Fprintln(out, "")
 	fmt.Fprintln(out, "Commands:")
-	fmt.Fprintln(out, "  observation <create|read|update|list|delete>")
+	fmt.Fprintln(out, "  observation <create|read|update|list|delete|export|import>")
 	fmt.Fprintln(out, "  search")
 	fmt.Fprintln(out, "  topic upsert")
 	fmt.Fprintln(out, "  session <open|resume|update-disclosure>")
 	fmt.Fprintln(out, "  config show")
+	fmt.Fprintln(out, "  projects <list|rename>")
+	fmt.Fprintln(out, "  setup <claude-code|cursor|vscode|opencode>")
 	fmt.Fprintln(out, "  serve")
 	fmt.Fprintln(out, "  mcp")
 	fmt.Fprintln(out, "  tui")
 }
 
 func writeObservationUsage(out io.Writer) {
-	fmt.Fprintln(out, "neabrain observation <create|read|update|list|delete>")
+	fmt.Fprintln(out, "neabrain observation <create|read|update|list|delete|export|import>")
+}
+
+func writeProjectsUsage(out io.Writer) {
+	fmt.Fprintln(out, "neabrain projects <list|rename>")
+}
+
+func writeSetupUsage(out io.Writer) {
+	fmt.Fprintln(out, "neabrain setup <claude-code|cursor|vscode|opencode>")
 }
 
 func writeTopicUsage(out io.Writer) {

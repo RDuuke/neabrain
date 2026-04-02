@@ -13,6 +13,8 @@ type ObservationRepository interface {
 	List(ctx context.Context, filter ObservationListFilter) ([]Observation, error)
 	SoftDelete(ctx context.Context, id string, deletedAt time.Time) (Observation, error)
 	FindByContent(ctx context.Context, content string, project string, includeDeleted bool) ([]Observation, error)
+	ListProjects(ctx context.Context) ([]ProjectSummary, error)
+	RenameProject(ctx context.Context, oldName, newName string) (int, error)
 }
 
 // TopicRepository defines persistence operations for topics.

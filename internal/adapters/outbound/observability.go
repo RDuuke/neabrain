@@ -85,6 +85,18 @@ func (o *observedObservationRepository) SoftDelete(ctx context.Context, id strin
 	return o.next.SoftDelete(ctx, id, deletedAt)
 }
 
+func (o *observedObservationRepository) ListProjects(ctx context.Context) ([]domain.ProjectSummary, error) {
+	o.metrics.Inc("repo.observation.list_projects")
+	o.logger.Info("repo observation list projects", nil)
+	return o.next.ListProjects(ctx)
+}
+
+func (o *observedObservationRepository) RenameProject(ctx context.Context, oldName, newName string) (int, error) {
+	o.metrics.Inc("repo.observation.rename_project")
+	o.logger.Info("repo observation rename project", map[string]any{"old": oldName, "new": newName})
+	return o.next.RenameProject(ctx, oldName, newName)
+}
+
 func (o *observedObservationRepository) FindByContent(ctx context.Context, content string, project string, includeDeleted bool) ([]domain.Observation, error) {
 	o.metrics.Inc("repo.observation.find_by_content")
 	o.logger.Info("repo observation find by content", map[string]any{"project": project, "include_deleted": includeDeleted, "content_length": len(content)})

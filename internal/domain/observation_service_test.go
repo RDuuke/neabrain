@@ -260,6 +260,32 @@ func (r *inMemoryObservationRepo) FindByContent(ctx context.Context, content str
 	return results, nil
 }
 
+func (r *inMemoryObservationRepo) ListProjects(ctx context.Context) ([]domain.ProjectSummary, error) {
+	counts := map[string]int{}
+	for _, obs := range r.items {
+		if obs.DeletedAt == nil && obs.Project != "" {
+			counts[obs.Project]++
+		}
+	}
+	summaries := make([]domain.ProjectSummary, 0, len(counts))
+	for name, count := range counts {
+		summaries = append(summaries, domain.ProjectSummary{Name: name, Count: count})
+	}
+	return summaries, nil
+}
+
+func (r *inMemoryObservationRepo) RenameProject(ctx context.Context, oldName, newName string) (int, error) {
+	count := 0
+	for id, obs := range r.items {
+		if obs.Project == oldName {
+			obs.Project = newName
+			r.items[id] = obs
+			count++
+		}
+	}
+	return count, nil
+}
+
 type inMemoryDuplicateRepo struct {
 	items []domain.Duplicate
 }
