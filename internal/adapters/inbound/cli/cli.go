@@ -19,6 +19,7 @@ import (
 	"neabrain/internal/app"
 	"neabrain/internal/domain"
 	ports "neabrain/internal/ports/outbound"
+	"neabrain/internal/version"
 )
 
 // Run executes the CLI command with args and returns an exit code.
@@ -56,6 +57,8 @@ func Run(ctx context.Context, args []string, out io.Writer, errOut io.Writer) in
 		return runProjects(ctx, args[1:], out, errOut)
 	case "setup":
 		return runSetup(args[1:], out, errOut)
+	case "version":
+		return runVersion(ctx, args[1:], out, errOut)
 	default:
 		writeUsage(out)
 		return 2
@@ -775,6 +778,35 @@ func runProjectsRename(ctx context.Context, args []string, out io.Writer, errOut
 	return handleError(err, errOut)
 }
 
+func runVersion(ctx context.Context, args []string, out io.Writer, errOut io.Writer) int {
+	fs := flag.NewFlagSet("version", flag.ContinueOnError)
+	fs.SetOutput(errOut)
+	check := fs.Bool("check", false, "Check for latest release on GitHub")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+
+	if !*check {
+		fmt.Fprintln(out, version.Current)
+		return 0
+	}
+
+	result, err := version.Check(ctx)
+	if err != nil {
+		fmt.Fprintln(errOut, "version check failed:", err)
+		return 1
+	}
+
+	if result.UpToDate {
+		fmt.Fprintf(out, "%s (up to date)\n", result.Current)
+		return 0
+	}
+
+	fmt.Fprintf(out, "Update available: %s → %s\n", result.Current, result.Latest)
+	fmt.Fprintf(out, "Run: %s\n", result.UpdateCmd)
+	return 0
+}
+
 func runSetup(args []string, out io.Writer, errOut io.Writer) int {
 	if len(args) == 0 {
 		writeSetupUsage(out)
@@ -1010,6 +1042,7 @@ func writeUsage(out io.Writer) {
 	fmt.Fprintln(out, "  config show")
 	fmt.Fprintln(out, "  projects <list|rename>")
 	fmt.Fprintln(out, "  setup <claude-code|cursor|vscode|opencode>")
+	fmt.Fprintln(out, "  version [--check]")
 	fmt.Fprintln(out, "  serve")
 	fmt.Fprintln(out, "  mcp")
 	fmt.Fprintln(out, "  tui")
