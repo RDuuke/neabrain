@@ -19,6 +19,7 @@ import (
 	"neabrain/internal/app"
 	"neabrain/internal/domain"
 	ports "neabrain/internal/ports/outbound"
+	"neabrain/internal/setup"
 	"neabrain/internal/version"
 )
 
@@ -813,14 +814,79 @@ func runSetup(args []string, out io.Writer, errOut io.Writer) int {
 		return 2
 	}
 
+	fs := flag.NewFlagSet("setup", flag.ContinueOnError)
+	fs.SetOutput(errOut)
+	install := fs.Bool("install", false, "Write config directly to the agent's config file")
+	uninstall := fs.Bool("uninstall", false, "Remove neabrain from the agent's config file")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+
+	remaining := fs.Args()
+	if len(remaining) == 0 {
+		writeSetupUsage(out)
+		return 2
+	}
+	agentName := remaining[0]
+
+	agent := setup.Agent(agentName)
+	validAgents := map[setup.Agent]bool{
+		setup.AgentClaudeCode: true,
+		setup.AgentCursor:     true,
+		setup.AgentVSCode:     true,
+		setup.AgentOpenCode:   true,
+	}
+	if !validAgents[agent] {
+		fmt.Fprintf(errOut, "unknown agent %q\n", agentName)
+		writeSetupUsage(out)
+		return 2
+	}
+
+	if *uninstall {
+		result, err := setup.Uninstall(agent)
+		if err != nil {
+			fmt.Fprintln(errOut, err.Error())
+			return 1
+		}
+		if result.Removed {
+			fmt.Fprintf(out, "Removed neabrain from %s\n", result.ConfigFile)
+		} else {
+			fmt.Fprintf(out, "neabrain was not installed in %s\n", result.ConfigFile)
+		}
+		return 0
+	}
+
 	exe, err := os.Executable()
 	if err != nil {
 		exe = "neabrain"
 	}
 	exe = filepath.ToSlash(exe)
 
-	switch args[0] {
-	case "claude-code":
+	if *install {
+		result, err := setup.Install(agent, exe)
+		if err != nil {
+			fmt.Fprintln(errOut, err.Error())
+			return 1
+		}
+		if result.AlreadySet {
+			fmt.Fprintf(out, "neabrain already configured in %s\n", result.ConfigFile)
+		} else {
+			fmt.Fprintf(out, "Installed neabrain into %s\n", result.ConfigFile)
+		}
+		return 0
+	}
+
+	// Default: print the snippet.
+	printSetupSnippet(agent, exe, out)
+	if runtime.GOOS == "windows" {
+		fmt.Fprintln(out, "\nNote: on Windows use the .exe path if neabrain is not in PATH.")
+	}
+	return 0
+}
+
+func printSetupSnippet(agent setup.Agent, exe string, out io.Writer) {
+	switch agent {
+	case setup.AgentClaudeCode:
 		fmt.Fprintln(out, "Add to .claude/settings.json under mcpServers:")
 		fmt.Fprintln(out, "")
 		cfg := map[string]any{
@@ -832,7 +898,8 @@ func runSetup(args []string, out io.Writer, errOut io.Writer) int {
 		}
 		data, _ := json.MarshalIndent(cfg, "", "  ")
 		fmt.Fprintln(out, string(data))
-	case "cursor":
+		fmt.Fprintln(out, "\nOr run: neabrain setup claude-code --install")
+	case setup.AgentCursor:
 		fmt.Fprintln(out, "Add to .cursor/mcp.json:")
 		fmt.Fprintln(out, "")
 		cfg := map[string]any{
@@ -845,8 +912,9 @@ func runSetup(args []string, out io.Writer, errOut io.Writer) int {
 		}
 		data, _ := json.MarshalIndent(cfg, "", "  ")
 		fmt.Fprintln(out, string(data))
-	case "vscode":
-		fmt.Fprintln(out, "Add to .vscode/mcp.json:")
+		fmt.Fprintln(out, "\nOr run: neabrain setup cursor --install")
+	case setup.AgentVSCode:
+		fmt.Fprintln(out, "Add to VS Code's mcp.json:")
 		fmt.Fprintln(out, "")
 		cfg := map[string]any{
 			"servers": map[string]any{
@@ -859,7 +927,8 @@ func runSetup(args []string, out io.Writer, errOut io.Writer) int {
 		}
 		data, _ := json.MarshalIndent(cfg, "", "  ")
 		fmt.Fprintln(out, string(data))
-	case "opencode":
+		fmt.Fprintln(out, "\nOr run: neabrain setup vscode --install")
+	case setup.AgentOpenCode:
 		fmt.Fprintln(out, "Add to opencode.json under mcp.servers:")
 		fmt.Fprintln(out, "")
 		cfg := map[string]any{
@@ -870,16 +939,8 @@ func runSetup(args []string, out io.Writer, errOut io.Writer) int {
 		}
 		data, _ := json.MarshalIndent(cfg, "", "  ")
 		fmt.Fprintln(out, string(data))
-	default:
-		fmt.Fprintf(errOut, "unknown agent %q\n", args[0])
-		writeSetupUsage(out)
-		return 2
+		fmt.Fprintln(out, "\nOr run: neabrain setup opencode --install")
 	}
-
-	if runtime.GOOS == "windows" {
-		fmt.Fprintln(out, "\nNote: on Windows use the .exe path if neabrain is not in PATH.")
-	}
-	return 0
 }
 
 func withApp(ctx context.Context, overrides ports.ConfigOverrides, operation string, fn func(*app.App) error) error {
@@ -1057,7 +1118,7 @@ func writeProjectsUsage(out io.Writer) {
 }
 
 func writeSetupUsage(out io.Writer) {
-	fmt.Fprintln(out, "neabrain setup <claude-code|cursor|vscode|opencode>")
+	fmt.Fprintln(out, "neabrain setup <claude-code|cursor|vscode|opencode> [--install] [--uninstall]")
 }
 
 func writeTopicUsage(out io.Writer) {
