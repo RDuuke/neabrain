@@ -45,3 +45,9 @@ type Duplicate struct {
 	Reason                 string
 	CreatedAt              time.Time
 }
+
+// ProjectSummary summarizes observation counts per project.
+type ProjectSummary struct {
+	Name  string
+	Count int
+}

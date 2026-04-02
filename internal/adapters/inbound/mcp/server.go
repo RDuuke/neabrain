@@ -209,6 +209,18 @@ type nbnContextArgs struct {
 	IncludeDeleted bool     `json:"include_deleted"`
 }
 
+type nbnExportArgs struct {
+	Project        string   `json:"project"`
+	TopicKey       string   `json:"topic_key"`
+	Tags           []string `json:"tags"`
+	IncludeDeleted bool     `json:"include_deleted"`
+}
+
+type nbnProjectsRenameArgs struct {
+	From string `json:"from"`
+	To   string `json:"to"`
+}
+
 func (s *Server) handleToolsCall(ctx context.Context, req Request) Response {
 	var params toolsCallParams
 	if err := json.Unmarshal(req.Params, &params); err != nil {
@@ -271,6 +283,40 @@ func (s *Server) handleToolsCall(ctx context.Context, req Request) Response {
 			return Response{JSONRPC: "2.0", ID: req.ID, Error: rpcErrorFrom(err)}
 		}
 		return Response{JSONRPC: "2.0", ID: req.ID, Result: results}
+	}
+
+	switch name {
+	case "nbn_export":
+		var args nbnExportArgs
+		if err := json.Unmarshal(params.Arguments, &args); err != nil {
+			return Response{JSONRPC: "2.0", ID: req.ID, Error: &RPCError{Code: -32602, Message: "invalid nbn_export args"}}
+		}
+		observations, err := s.app.ObservationService.List(callCtx, domain.ObservationListFilter{
+			Project:        pickProject(args.Project, s.app.Config.DefaultProject),
+			TopicKey:       args.TopicKey,
+			Tags:           args.Tags,
+			IncludeDeleted: args.IncludeDeleted,
+		})
+		if err != nil {
+			return Response{JSONRPC: "2.0", ID: req.ID, Error: rpcErrorFrom(err)}
+		}
+		return Response{JSONRPC: "2.0", ID: req.ID, Result: observations}
+	case "nbn_projects_list":
+		summaries, err := s.app.ObservationService.ListProjects(callCtx)
+		if err != nil {
+			return Response{JSONRPC: "2.0", ID: req.ID, Error: rpcErrorFrom(err)}
+		}
+		return Response{JSONRPC: "2.0", ID: req.ID, Result: summaries}
+	case "nbn_projects_rename":
+		var args nbnProjectsRenameArgs
+		if err := json.Unmarshal(params.Arguments, &args); err != nil {
+			return Response{JSONRPC: "2.0", ID: req.ID, Error: &RPCError{Code: -32602, Message: "invalid nbn_projects_rename args"}}
+		}
+		count, err := s.app.ObservationService.RenameProject(callCtx, args.From, args.To)
+		if err != nil {
+			return Response{JSONRPC: "2.0", ID: req.ID, Error: rpcErrorFrom(err)}
+		}
+		return Response{JSONRPC: "2.0", ID: req.ID, Result: map[string]any{"renamed": count}}
 	}
 
 	alias := map[string]string{
@@ -566,6 +612,17 @@ func toolDefinitions() []ToolDefinition {
 			"tags":      schemaStringArray(),
 			"metadata":  schemaObjectAny(),
 		}, "summary")},
+		{Name: "nbn_export", Description: "Export observations as a JSON list", InputSchema: schemaObject(map[string]any{
+			"project":         schemaString(),
+			"topic_key":       schemaString(),
+			"tags":            schemaStringArray(),
+			"include_deleted": schemaBool(),
+		})},
+		{Name: "nbn_projects_list", Description: "List projects with observation counts", InputSchema: schemaObject(map[string]any{})},
+		{Name: "nbn_projects_rename", Description: "Rename a project across all observations", InputSchema: schemaObject(map[string]any{
+			"from": schemaString(),
+			"to":   schemaString(),
+		}, "from", "to")},
 	}
 }
 

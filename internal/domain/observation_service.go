@@ -162,6 +162,22 @@ func (s *ObservationService) List(ctx context.Context, filter ObservationListFil
 	return s.repo.List(ctx, filter)
 }
 
+func (s *ObservationService) ListProjects(ctx context.Context) ([]ProjectSummary, error) {
+	return s.repo.ListProjects(ctx)
+}
+
+func (s *ObservationService) RenameProject(ctx context.Context, oldName, newName string) (int, error) {
+	oldName = strings.TrimSpace(oldName)
+	newName = strings.TrimSpace(newName)
+	if oldName == "" {
+		return 0, NewInvalidInput("old project name is required")
+	}
+	if newName == "" {
+		return 0, NewInvalidInput("new project name is required")
+	}
+	return s.repo.RenameProject(ctx, oldName, newName)
+}
+
 func (s *ObservationService) SoftDelete(ctx context.Context, id string) (Observation, error) {
 	if strings.TrimSpace(id) == "" {
 		return Observation{}, NewInvalidInput("observation id is required")

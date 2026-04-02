@@ -325,3 +325,11 @@ func (r *blockingObservationRepo) SoftDelete(ctx context.Context, id string, del
 func (r *blockingObservationRepo) FindByContent(ctx context.Context, content string, project string, includeDeleted bool) ([]domain.Observation, error) {
 	return nil, errors.New("unexpected FindByContent call")
 }
+
+func (r *blockingObservationRepo) ListProjects(ctx context.Context) ([]domain.ProjectSummary, error) {
+	return nil, errors.New("unexpected ListProjects call")
+}
+
+func (r *blockingObservationRepo) RenameProject(ctx context.Context, oldName, newName string) (int, error) {
+	return 0, errors.New("unexpected RenameProject call")
+}

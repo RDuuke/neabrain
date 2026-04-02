@@ -189,6 +189,35 @@ func (r *ObservationRepository) SoftDelete(ctx context.Context, id string, delet
 	return r.GetByID(ctx, id, true)
 }
 
+func (r *ObservationRepository) ListProjects(ctx context.Context) ([]domain.ProjectSummary, error) {
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT project, COUNT(*) AS cnt FROM observations WHERE deleted_at IS NULL AND project != '' GROUP BY project ORDER BY cnt DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var summaries []domain.ProjectSummary
+	for rows.Next() {
+		var s domain.ProjectSummary
+		if err := rows.Scan(&s.Name, &s.Count); err != nil {
+			return nil, err
+		}
+		summaries = append(summaries, s)
+	}
+	return summaries, rows.Err()
+}
+
+func (r *ObservationRepository) RenameProject(ctx context.Context, oldName, newName string) (int, error) {
+	result, err := r.db.ExecContext(ctx,
+		`UPDATE observations SET project = ?, updated_at = updated_at WHERE project = ?`, newName, oldName)
+	if err != nil {
+		return 0, err
+	}
+	affected, err := result.RowsAffected()
+	return int(affected), err
+}
+
 func (r *ObservationRepository) FindByContent(ctx context.Context, content string, project string, includeDeleted bool) ([]domain.Observation, error) {
 	query := `SELECT id, content, created_at, updated_at, deleted_at, project, topic_key, tags, source, metadata
 		FROM observations WHERE content = ? AND project = ?`
