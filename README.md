@@ -2,174 +2,201 @@
 
 ![NeaBrain Logo](logo.png)
 
-NeaBrain es un sistema de memory single-user que entrega comportamiento consistente en interfaces CLI, HTTP, MCP y TUI. La arquitectura aisla el core domain logic de adapters y storage para que todas las interfaces compartan la misma semantica.
+Sistema de memoria persistente local-first para agentes IA. Expone las mismas operaciones por CLI, HTTP, MCP y TUI. Arquitectura hexagonal: el domain core no depende de ningún adapter.
 
-## Metas
-- Proveer CRUD, search, dedupe, topic upsert y session behavior consistente entre adapters.
-- Mantener las domain rules estables mientras evolucionan storage, FTS e interfaces.
-- Soportar operacion local-first con configuration clara y precedence de overrides.
-
-## Arquitectura
-NeaBrain sigue una arquitectura hexagonal (ports and adapters):
-- Core entities: Observation, Topic, Session, Duplicate.
-- Inbound ports: ObservationService, SearchService, TopicService, SessionService, ConfigService.
-- Outbound ports: ObservationRepository, TopicRepository, SessionRepository, DuplicateRepository, SearchIndex, Clock.
-- Adapters: CLI, HTTP, MCP, TUI; mas implementaciones locales de storage, FTS, config y clock.
-
-Diagrams (Mermaid specs):
-- `docs/diagrams/hexagonal-architecture.md`
-- `docs/diagrams/data-flow.md`
-- `docs/diagrams/storage-schema.md`
-
-## Instalacion
-
-### From source
-Prereqs: Go 1.22 o superior.
+## Instalación
 
 ```bash
-git clone <repo-url>
-cd MotorBD
+go install github.com/RDuuke/neabrain/cmd/neabrain@latest
+```
+
+O desde source (Go 1.22+):
+
+```bash
+git clone https://github.com/RDuuke/neabrain.git
+cd neabrain
 go build -o neabrain ./cmd/neabrain
 ```
 
-Run directly:
+## Inicio rápido
 
 ```bash
-go run ./cmd/neabrain --help
+# Guardar una observación
+neabrain observation create --content "usar context.WithTimeout en MCP" --project "nea-brain" --tags "go,mcp"
+
+# Buscar
+neabrain search --query "timeout" --project "nea-brain"
+
+# Ver proyectos
+neabrain projects list
+
+# Exportar todas las observaciones como JSON
+neabrain observation export --output backup.json
+
+# Sincronizar entre máquinas
+neabrain sync export
+neabrain sync status
 ```
 
-### Binary (optional)
-Todavia no hay binaries publicados. Placeholder para futuras releases:
+## Integración con agentes IA
 
-```text
-# TODO: add release URLs once published
-```
-
-## Inicio rapido
-
-Crear una observation:
+NeaBrain funciona como servidor MCP. Conecta tu agente preferido con un solo comando:
 
 ```bash
-./neabrain observation create --content "hello" --project "demo" --topic "onboarding" --tags "cli"
+# Ver el snippet de configuración
+neabrain setup claude-code
+neabrain setup cursor
+neabrain setup vscode
+neabrain setup opencode
+
+# O escribir la configuración directamente
+neabrain setup claude-code --install
+neabrain setup claude-code --uninstall
 ```
 
-Search de observations:
+Guías detalladas en `docs/integrations/`.
+
+### MCP tools disponibles
+
+| Tool | Descripción |
+|---|---|
+| `nbn_capture` | Crea una observación |
+| `nbn_capture_passive` | Captura pasiva (sin confirmación) |
+| `nbn_read` | Lee una observación por ID |
+| `nbn_update` | Actualiza una observación |
+| `nbn_list` | Lista observaciones con filtros |
+| `nbn_delete` | Soft-delete |
+| `nbn_search` | Búsqueda full-text |
+| `nbn_topic_upsert` | Upsert de topic |
+| `nbn_session_open` | Abre sesión |
+| `nbn_session_resume` | Reanuda sesión |
+| `nbn_stats` | Estadísticas del store |
+| `nbn_projects_list` | Lista proyectos |
+| `nbn_projects_rename` | Renombra proyecto |
+| `nbn_merge_projects` | Fusiona proyectos |
+| `nbn_config_show` | Muestra configuración activa |
+
+#### Perfiles MCP
 
 ```bash
-./neabrain search --query "hello" --project "demo"
+neabrain mcp                    # perfil agent (solo lectura/captura)
+neabrain mcp --profile admin    # incluye herramientas destructivas
+neabrain mcp --profile all      # todas las herramientas
 ```
 
-Run HTTP server:
+## CLI — referencia
 
-```bash
-./neabrain serve --addr 127.0.0.1:8080
+```
+neabrain observation <create|read|update|list|delete|export|import>
+neabrain search [--query Q] [--project P]
+neabrain topic upsert
+neabrain session <open|resume|update-disclosure>
+neabrain projects <list|rename>
+neabrain config show
+neabrain setup <claude-code|cursor|vscode|opencode> [--install] [--uninstall]
+neabrain version [--check]
+neabrain sync <export|import|status> [--dir D] [--project P]
+neabrain serve [--addr :8080] [--sync-dir D]
+neabrain mcp [--profile agent|admin|all]
+neabrain tui
 ```
 
-Run MCP server:
+Flags de configuración disponibles en todos los comandos:
 
-```bash
-./neabrain mcp
-```
-
-Run TUI:
-
-```bash
-./neabrain tui
-```
-
-## Configuration
-Defaults, overrides y environment variables estan documentados en `docs/operations.md`.
-
-Resumen:
-- Config directory: os.UserConfigDir()/neabrain
-- Config file: <config dir>/config.json
-- Storage path: <config dir>/neabrain.db
-- FTS path: defaults to storage path cuando no se setea
-- Precedence: CLI overrides > environment variables > config file > defaults
-
-Environment variables:
-- NEABRAIN_STORAGE_PATH
-- NEABRAIN_FTS_PATH
-- NEABRAIN_DEFAULT_PROJECT
-- NEABRAIN_DEDUPE_POLICY
-- NEABRAIN_CONFIG_FILE
-
-## CLI
-
-Top-level commands:
-- `observation <create|read|update|list|delete>`
-- `search`
-- `topic upsert`
-- `session <open|resume|update-disclosure>`
-- `config show`
-- `serve`
-- `mcp`
-- `tui`
-
-Config override flags (available on most commands):
-- `--storage-path`
-- `--fts-path`
-- `--default-project`
-- `--dedupe-policy`
-- `--config-file`
-
-Example:
-
-```bash
-./neabrain observation list --project "demo" --tags "cli" --storage-path ./data/neabrain.db
-```
+| Flag | Variable de entorno | Descripción |
+|---|---|---|
+| `--storage-path` | `NEABRAIN_STORAGE_PATH` | Ruta del archivo SQLite |
+| `--fts-path` | `NEABRAIN_FTS_PATH` | Ruta del índice FTS |
+| `--default-project` | `NEABRAIN_DEFAULT_PROJECT` | Proyecto por defecto |
+| `--dedupe-policy` | `NEABRAIN_DEDUPE_POLICY` | `exact` (default) o `none` |
+| `--config-file` | `NEABRAIN_CONFIG_FILE` | Ruta del archivo de configuración |
 
 ## HTTP API
-Todos los endpoints se sirven con `serve`.
 
-Observations:
-- `POST /observations`
-- `GET /observations`
-- `GET /observations/{id}`
-- `PATCH /observations/{id}`
-- `DELETE /observations/{id}`
+```bash
+neabrain serve --addr :8080
+```
 
-Search:
-- `GET /search?query=...&project=...&topic_key=...&tags=tag1,tag2&include_deleted=true`
+| Método | Ruta | Descripción |
+|---|---|---|
+| `POST` | `/observations` | Crear observación |
+| `GET` | `/observations` | Listar observaciones |
+| `GET` | `/observations/{id}` | Leer observación |
+| `PATCH` | `/observations/{id}` | Actualizar observación |
+| `DELETE` | `/observations/{id}` | Soft-delete |
+| `GET` | `/search?query=...` | Búsqueda full-text |
+| `PUT` | `/topics/{key}` | Upsert de topic |
+| `POST` | `/sessions` | Abrir sesión |
+| `POST` | `/sessions/{id}/resume` | Reanudar sesión |
+| `PATCH` | `/sessions/{id}` | Actualizar sesión |
 
-Topics:
-- `PUT /topics/{topic_key}`
+Con `--sync-dir`, el servidor dispara un export automático en background después de cada escritura.
 
-Sessions:
-- `POST /sessions`
-- `POST /sessions/{id}/resume`
-- `PATCH /sessions/{id}`
+## Sync
 
-## MCP tools
-El MCP server expone los siguientes tools via JSON-RPC:
-- `observation.create`
-- `observation.read`
-- `observation.update`
-- `observation.list`
-- `observation.delete`
-- `search`
-- `topic.upsert`
-- `session.open`
-- `session.resume`
-- `session.update_disclosure`
-- `config.show`
+Sincronización portable y sin conflictos entre máquinas via chunks JSONL.gz inmutables:
 
-## OpenCode MCP plugin
-Este repo incluye un OpenCode MCP plugin package para NeaBrain:
-- Package: `plugins/opencode-mcp`
-- Install y usage: `docs/opencode-mcp.md`
-- Adapter: `plugins/opencode-mcp/adapter.ts` (registra `nbn_*` tool aliases y compaction hooks)
+```
+~/.config/neabrain/sync/
+  manifest.json        ← índice compartido (append-only, git-friendly)
+  sync_state.json      ← qué chunks importó esta máquina
+  chunks/
+    <sha256>.jsonl.gz  ← cada export produce un chunk nuevo
+```
 
-## Verification
+```bash
+# Exportar observaciones como nuevo chunk
+neabrain sync export --project "mi-proyecto"
 
-Tests:
+# Ver estado
+neabrain sync status
+
+# Importar chunks pendientes (idempotente)
+neabrain sync import
+```
+
+El mismo directorio puede vivir en Dropbox, un repo git, o cualquier sistema de archivos compartido.
+
+## Configuración
+
+Ruta por defecto: `os.UserConfigDir()/neabrain/config.json`
+
+Precedencia: flags CLI > variables de entorno > archivo de config > defaults
+
+## Arquitectura
+
+```
+cmd/neabrain/
+internal/
+  domain/          ← entidades, servicios, políticas (sin dependencias externas)
+  ports/           ← interfaces inbound y outbound
+  adapters/
+    inbound/
+      cli/         ← CLI (flag)
+      http/        ← HTTP API (net/http)
+      mcp/         ← MCP JSON-RPC server
+      tui/         ← TUI (Bubble Tea)
+    outbound/
+      sqlite/      ← repositorios SQLite + FTS5
+  sync/            ← sync de chunks JSONL.gz
+  setup/           ← instalación de config por agente
+  version/         ← check de versión via GitHub API
+  infrastructure/  ← migrations SQLite
+  observability/   ← logger y métricas
+plugins/
+  opencode-mcp/    ← plugin TypeScript para OpenCode
+docs/
+  integrations/    ← guías por agente (claude-code, cursor, vscode)
+```
+
+## Tests
 
 ```bash
 go test ./...
 ```
 
-End-to-end smoke test (CLI, HTTP, MCP):
+## Releases
 
-```powershell
-./scripts/e2e_smoke.ps1
-```
+- [v0.4.0](https://github.com/RDuuke/neabrain/releases/tag/v0.4.0) — sync de chunks, write notifications
+- [v0.3.0](https://github.com/RDuuke/neabrain/releases/tag/v0.3.0) — version check, setup --install
+- [v0.2.0](https://github.com/RDuuke/neabrain/releases/tag/v0.2.0) — export/import, projects, AGENTS.md, MCP profiles, TUI Bubble Tea
