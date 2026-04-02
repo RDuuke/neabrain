@@ -80,6 +80,8 @@ func runObservation(ctx context.Context, args []string, out io.Writer, errOut io
 		return runObservationCreate(ctx, args[1:], out, errOut)
 	case "read":
 		return runObservationRead(ctx, args[1:], out, errOut)
+	case "timeline":
+		return runObservationTimeline(ctx, args[1:], out, errOut)
 	case "update":
 		return runObservationUpdate(ctx, args[1:], out, errOut)
 	case "list":
@@ -243,6 +245,38 @@ func runObservationUpdate(ctx context.Context, args []string, out io.Writer, err
 	return handleError(err, errOut)
 }
 
+func runObservationTimeline(ctx context.Context, args []string, out io.Writer, errOut io.Writer) int {
+	fs := flag.NewFlagSet("observation timeline", flag.ContinueOnError)
+	fs.SetOutput(errOut)
+
+	var (
+		id             string
+		before         int
+		after          int
+		includeDeleted bool
+		configFlags    configFlagSet
+	)
+	fs.StringVar(&id, "id", "", "Observation id")
+	fs.IntVar(&before, "before", 5, "Number of observations before the target")
+	fs.IntVar(&after, "after", 5, "Number of observations after the target")
+	fs.BoolVar(&includeDeleted, "include-deleted", false, "Include soft deleted observations")
+	configFlags.bind(fs)
+
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+
+	overrides := configFlags.toOverrides()
+	err := withApp(ctx, overrides, "observation.timeline", func(app *app.App) error {
+		timeline, err := app.ObservationService.Timeline(ctx, id, before, after, includeDeleted)
+		if err != nil {
+			return err
+		}
+		return writeJSON(out, timeline)
+	})
+	return handleError(err, errOut)
+}
+
 func runObservationList(ctx context.Context, args []string, out io.Writer, errOut io.Writer) int {
 	fs := flag.NewFlagSet("observation list", flag.ContinueOnError)
 	fs.SetOutput(errOut)
@@ -349,10 +383,23 @@ func runSearch(ctx context.Context, args []string, out io.Writer, errOut io.Writ
 }
 
 func runTopic(ctx context.Context, args []string, out io.Writer, errOut io.Writer) int {
-	if len(args) == 0 || args[0] != "upsert" {
+	if len(args) == 0 {
 		writeTopicUsage(out)
 		return 2
 	}
+
+	switch args[0] {
+	case "upsert":
+		return runTopicUpsert(ctx, args[1:], out, errOut)
+	case "list":
+		return runTopicList(ctx, args[1:], out, errOut)
+	default:
+		writeTopicUsage(out)
+		return 2
+	}
+}
+
+func runTopicUpsert(ctx context.Context, args []string, out io.Writer, errOut io.Writer) int {
 	fs := flag.NewFlagSet("topic upsert", flag.ContinueOnError)
 	fs.SetOutput(errOut)
 
@@ -369,7 +416,7 @@ func runTopic(ctx context.Context, args []string, out io.Writer, errOut io.Write
 	fs.Var(&metadata, "metadata", "JSON metadata")
 	configFlags.bind(fs)
 
-	if err := fs.Parse(args[1:]); err != nil {
+	if err := fs.Parse(args); err != nil {
 		return 2
 	}
 
@@ -392,6 +439,28 @@ func runTopic(ctx context.Context, args []string, out io.Writer, errOut io.Write
 			return err
 		}
 		return writeJSON(out, topic)
+	})
+	return handleError(err, errOut)
+}
+
+func runTopicList(ctx context.Context, args []string, out io.Writer, errOut io.Writer) int {
+	fs := flag.NewFlagSet("topic list", flag.ContinueOnError)
+	fs.SetOutput(errOut)
+
+	var configFlags configFlagSet
+	configFlags.bind(fs)
+
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+
+	overrides := configFlags.toOverrides()
+	err := withApp(ctx, overrides, "topic.list", func(app *app.App) error {
+		topics, err := app.TopicService.List(ctx)
+		if err != nil {
+			return err
+		}
+		return writeJSON(out, topics)
 	})
 	return handleError(err, errOut)
 }
@@ -1201,9 +1270,9 @@ func writeUsage(out io.Writer) {
 	fmt.Fprintln(out, "neabrain <command> [args]")
 	fmt.Fprintln(out, "")
 	fmt.Fprintln(out, "Commands:")
-	fmt.Fprintln(out, "  observation <create|read|update|list|delete|export|import>")
+	fmt.Fprintln(out, "  observation <create|read|timeline|update|list|delete|export|import>")
 	fmt.Fprintln(out, "  search")
-	fmt.Fprintln(out, "  topic upsert")
+	fmt.Fprintln(out, "  topic <upsert|list>")
 	fmt.Fprintln(out, "  session <open|resume|update-disclosure>")
 	fmt.Fprintln(out, "  config show")
 	fmt.Fprintln(out, "  projects <list|rename>")
@@ -1216,7 +1285,7 @@ func writeUsage(out io.Writer) {
 }
 
 func writeObservationUsage(out io.Writer) {
-	fmt.Fprintln(out, "neabrain observation <create|read|update|list|delete|export|import>")
+	fmt.Fprintln(out, "neabrain observation <create|read|timeline|update|list|delete|export|import>")
 }
 
 func writeProjectsUsage(out io.Writer) {
@@ -1228,7 +1297,7 @@ func writeSetupUsage(out io.Writer) {
 }
 
 func writeTopicUsage(out io.Writer) {
-	fmt.Fprintln(out, "neabrain topic upsert")
+	fmt.Fprintln(out, "neabrain topic <upsert|list>")
 }
 
 func writeSessionUsage(out io.Writer) {

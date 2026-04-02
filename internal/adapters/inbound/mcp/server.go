@@ -11,6 +11,7 @@ import (
 
 	"neabrain/internal/app"
 	"neabrain/internal/domain"
+	neasync "neabrain/internal/sync"
 )
 
 // Profile controls which tools are exposed by the MCP server.
@@ -176,6 +177,13 @@ type observationReadArgs struct {
 	IncludeDeleted bool   `json:"include_deleted"`
 }
 
+type observationTimelineArgs struct {
+	ID             string `json:"id"`
+	Before         *int   `json:"before"`
+	After          *int   `json:"after"`
+	IncludeDeleted bool   `json:"include_deleted"`
+}
+
 type observationUpdateArgs struct {
 	ID       string          `json:"id"`
 	Content  *string         `json:"content"`
@@ -187,10 +195,12 @@ type observationUpdateArgs struct {
 }
 
 type observationListArgs struct {
-	Project        string   `json:"project"`
-	TopicKey       string   `json:"topic_key"`
-	Tags           []string `json:"tags"`
-	IncludeDeleted bool     `json:"include_deleted"`
+	Project         string   `json:"project"`
+	TopicKey        string   `json:"topic_key"`
+	Tags            []string `json:"tags"`
+	IncludeDeleted  bool     `json:"include_deleted"`
+	DisclosureLevel string   `json:"disclosure_level"`
+	SessionID       string   `json:"session_id"`
 }
 
 type observationDeleteArgs struct {
@@ -198,11 +208,13 @@ type observationDeleteArgs struct {
 }
 
 type searchArgs struct {
-	Query          string   `json:"query"`
-	Project        string   `json:"project"`
-	TopicKey       string   `json:"topic_key"`
-	Tags           []string `json:"tags"`
-	IncludeDeleted bool     `json:"include_deleted"`
+	Query           string   `json:"query"`
+	Project         string   `json:"project"`
+	TopicKey        string   `json:"topic_key"`
+	Tags            []string `json:"tags"`
+	IncludeDeleted  bool     `json:"include_deleted"`
+	DisclosureLevel string   `json:"disclosure_level"`
+	SessionID       string   `json:"session_id"`
 }
 
 type topicUpsertArgs struct {
@@ -211,6 +223,8 @@ type topicUpsertArgs struct {
 	Description string         `json:"description"`
 	Metadata    map[string]any `json:"metadata"`
 }
+
+type topicsListArgs struct{}
 
 type sessionOpenArgs struct {
 	DisclosureLevel string `json:"disclosure_level"`
@@ -234,11 +248,13 @@ type nbnSessionSummaryArgs struct {
 }
 
 type nbnContextArgs struct {
-	Query          string   `json:"query"`
-	Project        string   `json:"project"`
-	TopicKey       string   `json:"topic_key"`
-	Tags           []string `json:"tags"`
-	IncludeDeleted bool     `json:"include_deleted"`
+	Query           string   `json:"query"`
+	Project         string   `json:"project"`
+	TopicKey        string   `json:"topic_key"`
+	Tags            []string `json:"tags"`
+	IncludeDeleted  bool     `json:"include_deleted"`
+	DisclosureLevel string   `json:"disclosure_level"`
+	SessionID       string   `json:"session_id"`
 }
 
 type nbnExportArgs struct {
@@ -251,6 +267,22 @@ type nbnExportArgs struct {
 type nbnProjectsRenameArgs struct {
 	From string `json:"from"`
 	To   string `json:"to"`
+}
+
+type nbnSyncStatusArgs struct {
+	Dir string `json:"dir"`
+}
+
+type nbnSyncExportArgs struct {
+	Dir            string   `json:"dir"`
+	Project        string   `json:"project"`
+	TopicKey       string   `json:"topic_key"`
+	Tags           []string `json:"tags"`
+	IncludeDeleted bool     `json:"include_deleted"`
+}
+
+type nbnSyncImportArgs struct {
+	Dir string `json:"dir"`
 }
 
 type nbnMergeProjectsArgs struct {
@@ -317,11 +349,16 @@ func (s *Server) handleToolsCall(ctx context.Context, req Request) Response {
 		if err := json.Unmarshal(params.Arguments, &args); err != nil {
 			return Response{JSONRPC: "2.0", ID: req.ID, Error: &RPCError{Code: -32602, Message: "invalid nbn_context args"}}
 		}
+		disclosureLevel, err := resolveDisclosureLevel(callCtx, s.app, args.SessionID, args.DisclosureLevel)
+		if err != nil {
+			return Response{JSONRPC: "2.0", ID: req.ID, Error: rpcErrorFrom(err)}
+		}
 		results, err := s.app.SearchService.Search(callCtx, args.Query, domain.SearchFilter{
-			Project:        pickProject(args.Project, s.app.Config.DefaultProject),
-			TopicKey:       args.TopicKey,
-			Tags:           args.Tags,
-			IncludeDeleted: args.IncludeDeleted,
+			Project:         pickProject(args.Project, s.app.Config.DefaultProject),
+			TopicKey:        args.TopicKey,
+			Tags:            args.Tags,
+			IncludeDeleted:  args.IncludeDeleted,
+			DisclosureLevel: disclosureLevel,
 		})
 		if err != nil {
 			return Response{JSONRPC: "2.0", ID: req.ID, Error: rpcErrorFrom(err)}
@@ -388,6 +425,16 @@ func (s *Server) handleToolsCall(ctx context.Context, req Request) Response {
 			return Response{JSONRPC: "2.0", ID: req.ID, Error: rpcErrorFrom(err)}
 		}
 		return Response{JSONRPC: "2.0", ID: req.ID, Result: summaries}
+	case "nbn_topics_list":
+		var args topicsListArgs
+		if err := json.Unmarshal(params.Arguments, &args); err != nil {
+			return Response{JSONRPC: "2.0", ID: req.ID, Error: &RPCError{Code: -32602, Message: "invalid nbn_topics_list args"}}
+		}
+		summaries, err := s.app.TopicService.List(callCtx)
+		if err != nil {
+			return Response{JSONRPC: "2.0", ID: req.ID, Error: rpcErrorFrom(err)}
+		}
+		return Response{JSONRPC: "2.0", ID: req.ID, Result: summaries}
 	case "nbn_projects_rename":
 		var args nbnProjectsRenameArgs
 		if err := json.Unmarshal(params.Arguments, &args); err != nil {
@@ -398,11 +445,71 @@ func (s *Server) handleToolsCall(ctx context.Context, req Request) Response {
 			return Response{JSONRPC: "2.0", ID: req.ID, Error: rpcErrorFrom(err)}
 		}
 		return Response{JSONRPC: "2.0", ID: req.ID, Result: map[string]any{"renamed": count}}
+	case "nbn_sync_status":
+		var args nbnSyncStatusArgs
+		if err := json.Unmarshal(params.Arguments, &args); err != nil {
+			return Response{JSONRPC: "2.0", ID: req.ID, Error: &RPCError{Code: -32602, Message: "invalid nbn_sync_status args"}}
+		}
+		dir, err := resolveSyncDir(args.Dir)
+		if err != nil {
+			return Response{JSONRPC: "2.0", ID: req.ID, Error: rpcErrorFrom(err)}
+		}
+		status, err := neasync.New(neasync.NewFSTransport(dir)).Status(callCtx)
+		if err != nil {
+			return Response{JSONRPC: "2.0", ID: req.ID, Error: rpcErrorFrom(err)}
+		}
+		status.SyncDir = dir
+		return Response{JSONRPC: "2.0", ID: req.ID, Result: status}
+	case "nbn_sync_export":
+		var args nbnSyncExportArgs
+		if err := json.Unmarshal(params.Arguments, &args); err != nil {
+			return Response{JSONRPC: "2.0", ID: req.ID, Error: &RPCError{Code: -32602, Message: "invalid nbn_sync_export args"}}
+		}
+		dir, err := resolveSyncDir(args.Dir)
+		if err != nil {
+			return Response{JSONRPC: "2.0", ID: req.ID, Error: rpcErrorFrom(err)}
+		}
+		result, err := neasync.New(neasync.NewFSTransport(dir)).Export(callCtx, s.app.ObservationService, domain.ObservationListFilter{
+			Project:        pickProject(args.Project, s.app.Config.DefaultProject),
+			TopicKey:       args.TopicKey,
+			Tags:           args.Tags,
+			IncludeDeleted: args.IncludeDeleted,
+		})
+		if err != nil {
+			return Response{JSONRPC: "2.0", ID: req.ID, Error: rpcErrorFrom(err)}
+		}
+		return Response{JSONRPC: "2.0", ID: req.ID, Result: map[string]any{
+			"sync_dir":       dir,
+			"chunk_id":       result.ChunkID,
+			"count":          result.Count,
+			"size_bytes":     result.SizeBytes,
+			"already_exists": result.AlreadyExists,
+		}}
+	case "nbn_sync_import":
+		var args nbnSyncImportArgs
+		if err := json.Unmarshal(params.Arguments, &args); err != nil {
+			return Response{JSONRPC: "2.0", ID: req.ID, Error: &RPCError{Code: -32602, Message: "invalid nbn_sync_import args"}}
+		}
+		dir, err := resolveSyncDir(args.Dir)
+		if err != nil {
+			return Response{JSONRPC: "2.0", ID: req.ID, Error: rpcErrorFrom(err)}
+		}
+		result, err := neasync.New(neasync.NewFSTransport(dir)).Import(callCtx, s.app.ObservationService)
+		if err != nil {
+			return Response{JSONRPC: "2.0", ID: req.ID, Error: rpcErrorFrom(err)}
+		}
+		return Response{JSONRPC: "2.0", ID: req.ID, Result: map[string]any{
+			"sync_dir":         dir,
+			"chunks_processed": result.ChunksProcessed,
+			"created":          result.Created,
+			"skipped":          result.Skipped,
+		}}
 	}
 
 	alias := map[string]string{
 		"nbn_observation_create":        "observation.create",
 		"nbn_observation_read":          "observation.read",
+		"nbn_timeline":                  "observation.timeline",
 		"nbn_observation_update":        "observation.update",
 		"nbn_observation_list":          "observation.list",
 		"nbn_observation_delete":        "observation.delete",
@@ -446,6 +553,24 @@ func (s *Server) handleToolsCall(ctx context.Context, req Request) Response {
 			return Response{JSONRPC: "2.0", ID: req.ID, Error: rpcErrorFrom(err)}
 		}
 		return Response{JSONRPC: "2.0", ID: req.ID, Result: observation}
+	case "observation.timeline":
+		var args observationTimelineArgs
+		if err := json.Unmarshal(params.Arguments, &args); err != nil {
+			return Response{JSONRPC: "2.0", ID: req.ID, Error: &RPCError{Code: -32602, Message: "invalid observation.timeline args"}}
+		}
+		before := 5
+		after := 5
+		if args.Before != nil {
+			before = *args.Before
+		}
+		if args.After != nil {
+			after = *args.After
+		}
+		timeline, err := s.app.ObservationService.Timeline(callCtx, args.ID, before, after, args.IncludeDeleted)
+		if err != nil {
+			return Response{JSONRPC: "2.0", ID: req.ID, Error: rpcErrorFrom(err)}
+		}
+		return Response{JSONRPC: "2.0", ID: req.ID, Result: timeline}
 	case "observation.update":
 		var args observationUpdateArgs
 		if err := json.Unmarshal(params.Arguments, &args); err != nil {
@@ -480,11 +605,16 @@ func (s *Server) handleToolsCall(ctx context.Context, req Request) Response {
 		if err := json.Unmarshal(params.Arguments, &args); err != nil {
 			return Response{JSONRPC: "2.0", ID: req.ID, Error: &RPCError{Code: -32602, Message: "invalid observation.list args"}}
 		}
+		disclosureLevel, err := resolveDisclosureLevel(callCtx, s.app, args.SessionID, args.DisclosureLevel)
+		if err != nil {
+			return Response{JSONRPC: "2.0", ID: req.ID, Error: rpcErrorFrom(err)}
+		}
 		observations, err := s.app.ObservationService.List(callCtx, domain.ObservationListFilter{
-			Project:        pickProject(args.Project, s.app.Config.DefaultProject),
-			TopicKey:       args.TopicKey,
-			Tags:           args.Tags,
-			IncludeDeleted: args.IncludeDeleted,
+			Project:         pickProject(args.Project, s.app.Config.DefaultProject),
+			TopicKey:        args.TopicKey,
+			Tags:            args.Tags,
+			IncludeDeleted:  args.IncludeDeleted,
+			DisclosureLevel: disclosureLevel,
 		})
 		if err != nil {
 			return Response{JSONRPC: "2.0", ID: req.ID, Error: rpcErrorFrom(err)}
@@ -505,11 +635,16 @@ func (s *Server) handleToolsCall(ctx context.Context, req Request) Response {
 		if err := json.Unmarshal(params.Arguments, &args); err != nil {
 			return Response{JSONRPC: "2.0", ID: req.ID, Error: &RPCError{Code: -32602, Message: "invalid search args"}}
 		}
+		disclosureLevel, err := resolveDisclosureLevel(callCtx, s.app, args.SessionID, args.DisclosureLevel)
+		if err != nil {
+			return Response{JSONRPC: "2.0", ID: req.ID, Error: rpcErrorFrom(err)}
+		}
 		results, err := s.app.SearchService.Search(callCtx, args.Query, domain.SearchFilter{
-			Project:        pickProject(args.Project, s.app.Config.DefaultProject),
-			TopicKey:       args.TopicKey,
-			Tags:           args.Tags,
-			IncludeDeleted: args.IncludeDeleted,
+			Project:         pickProject(args.Project, s.app.Config.DefaultProject),
+			TopicKey:        args.TopicKey,
+			Tags:            args.Tags,
+			IncludeDeleted:  args.IncludeDeleted,
+			DisclosureLevel: disclosureLevel,
 		})
 		if err != nil {
 			return Response{JSONRPC: "2.0", ID: req.ID, Error: rpcErrorFrom(err)}
@@ -601,6 +736,12 @@ func toolDefinitions() []ToolDefinition {
 		"id":              schemaString(),
 		"include_deleted": schemaBool(),
 	}, "id")
+	obsTimelineSchema := schemaObject(map[string]any{
+		"id":              schemaString(),
+		"before":          schemaNumber(),
+		"after":           schemaNumber(),
+		"include_deleted": schemaBool(),
+	}, "id")
 	obsUpdateSchema := schemaObject(map[string]any{
 		"id":        schemaString(),
 		"content":   schemaString(),
@@ -611,18 +752,22 @@ func toolDefinitions() []ToolDefinition {
 		"metadata":  schemaObjectAny(),
 	}, "id")
 	obsListSchema := schemaObject(map[string]any{
-		"project":         schemaString(),
-		"topic_key":       schemaString(),
-		"tags":            schemaStringArray(),
-		"include_deleted": schemaBool(),
+		"project":          schemaString(),
+		"topic_key":        schemaString(),
+		"tags":             schemaStringArray(),
+		"include_deleted":  schemaBool(),
+		"disclosure_level": schemaString(),
+		"session_id":       schemaString(),
 	})
 	obsDeleteSchema := schemaObject(map[string]any{"id": schemaString()}, "id")
 	searchSchema := schemaObject(map[string]any{
-		"query":           schemaString(),
-		"project":         schemaString(),
-		"topic_key":       schemaString(),
-		"tags":            schemaStringArray(),
-		"include_deleted": schemaBool(),
+		"query":            schemaString(),
+		"project":          schemaString(),
+		"topic_key":        schemaString(),
+		"tags":             schemaStringArray(),
+		"include_deleted":  schemaBool(),
+		"disclosure_level": schemaString(),
+		"session_id":       schemaString(),
 	}, "query")
 	topicUpsertSchema := schemaObject(map[string]any{
 		"topic_key":   schemaString(),
@@ -646,6 +791,13 @@ func toolDefinitions() []ToolDefinition {
 		{Name: "nbn_observation_read", Annotations: ro,
 			Description: "Alias for observation.read.",
 			InputSchema: obsReadSchema},
+
+		{Name: "observation.timeline", Annotations: ro,
+			Description: "Retrieve chronological context around an observation with observations before and after it.",
+			InputSchema: obsTimelineSchema},
+		{Name: "nbn_timeline", Annotations: ro,
+			Description: "Alias for observation.timeline.",
+			InputSchema: obsTimelineSchema},
 
 		{Name: "observation.update", Annotations: idempotent,
 			Description: "Update fields of an existing observation. Only supplied fields are changed.",
@@ -686,6 +838,9 @@ func toolDefinitions() []ToolDefinition {
 		{Name: "nbn_topic_upsert", Annotations: idempotent,
 			Description: "Alias for topic.upsert.",
 			InputSchema: topicUpsertSchema},
+		{Name: "nbn_topics_list", Annotations: ro,
+			Description: "List all topics with names, descriptions, and active observation counts.",
+			InputSchema: schemaObject(map[string]any{})},
 
 		// ── Sessions ────────────────────────────────────────────────────────────
 		{Name: "session.open", Annotations: write,
@@ -765,6 +920,26 @@ func toolDefinitions() []ToolDefinition {
 				"to":   schemaString(),
 			}, "from", "to")},
 
+		{Name: "nbn_sync_status", Annotations: ro,
+			Description: "Inspect the sync directory state: chunk counts, pending imports, and total exported observations.",
+			InputSchema: schemaObject(map[string]any{
+				"dir": schemaString(),
+			})},
+		{Name: "nbn_sync_export", Annotations: write,
+			Description: "Export the current observation snapshot into a new immutable sync chunk.",
+			InputSchema: schemaObject(map[string]any{
+				"dir":             schemaString(),
+				"project":         schemaString(),
+				"topic_key":       schemaString(),
+				"tags":            schemaStringArray(),
+				"include_deleted": schemaBool(),
+			})},
+		{Name: "nbn_sync_import", Annotations: write,
+			Description: "Import all pending sync chunks from the shared sync directory into local storage.",
+			InputSchema: schemaObject(map[string]any{
+				"dir": schemaString(),
+			})},
+
 		// ── Admin tools (hidden from agent profile) ──────────────────────────────
 		{Name: "nbn_stats", Annotations: ro, adminOnly: true,
 			Description: "Return aggregate counts: active observations, soft-deleted observations, and distinct projects.",
@@ -793,6 +968,10 @@ func schemaString() map[string]any {
 
 func schemaBool() map[string]any {
 	return map[string]any{"type": "boolean"}
+}
+
+func schemaNumber() map[string]any {
+	return map[string]any{"type": "number"}
 }
 
 func schemaStringArray() map[string]any {
@@ -848,4 +1027,22 @@ func pickProject(project string, fallback string) string {
 		return fallback
 	}
 	return project
+}
+
+func resolveSyncDir(dir string) (string, error) {
+	if strings.TrimSpace(dir) != "" {
+		return dir, nil
+	}
+	return neasync.DefaultSyncDir()
+}
+
+func resolveDisclosureLevel(ctx context.Context, appInstance *app.App, sessionID string, disclosureLevel string) (string, error) {
+	if strings.TrimSpace(sessionID) != "" {
+		session, err := appInstance.SessionService.Read(ctx, sessionID)
+		if err != nil {
+			return "", err
+		}
+		return session.DisclosureLevel, nil
+	}
+	return disclosureLevel, nil
 }

@@ -38,6 +38,13 @@ func (s *SessionService) Open(ctx context.Context, input SessionOpenInput) (Sess
 	return s.repo.Create(ctx, session)
 }
 
+func (s *SessionService) Read(ctx context.Context, id string) (Session, error) {
+	if strings.TrimSpace(id) == "" {
+		return Session{}, NewInvalidInput("session id is required")
+	}
+	return s.repo.GetByID(ctx, id)
+}
+
 func (s *SessionService) Resume(ctx context.Context, id string) (Session, error) {
 	if strings.TrimSpace(id) == "" {
 		return Session{}, NewInvalidInput("session id is required")

@@ -11,6 +11,7 @@ type ObservationRepository interface {
 	GetByID(ctx context.Context, id string, includeDeleted bool) (Observation, error)
 	Update(ctx context.Context, observation Observation) (Observation, error)
 	List(ctx context.Context, filter ObservationListFilter) ([]Observation, error)
+	FindAround(ctx context.Context, id string, before, after int, includeDeleted bool) (TimelineResult, error)
 	SoftDelete(ctx context.Context, id string, deletedAt time.Time) (Observation, error)
 	FindByContent(ctx context.Context, content string, project string, includeDeleted bool) ([]Observation, error)
 	ListProjects(ctx context.Context) ([]ProjectSummary, error)
@@ -22,6 +23,7 @@ type ObservationRepository interface {
 type TopicRepository interface {
 	UpsertByTopicKey(ctx context.Context, topic Topic) (Topic, error)
 	GetByTopicKey(ctx context.Context, topicKey string) (Topic, error)
+	List(ctx context.Context) ([]TopicSummary, error)
 }
 
 // SessionRepository defines persistence operations for sessions.

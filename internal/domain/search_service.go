@@ -37,6 +37,9 @@ func (s *SearchService) Search(ctx context.Context, query string, filter SearchF
 			}
 			return nil, err
 		}
+		if !isObservationVisible(observation.Tags, filter.DisclosureLevel) {
+			continue
+		}
 		observations = append(observations, observation)
 	}
 

@@ -67,9 +67,12 @@ const MCP_DIAGNOSTICS_ENABLED = readBooleanEnv("NEABRAIN_MCP_DIAGNOSTICS", false
 const READ_ONLY_TOOLS_FOR_RETRY = new Set([
   "nbn_observation_read",
   "nbn_observation_list",
+  "nbn_timeline",
   "nbn_search",
   "nbn_config_show",
   "nbn_context",
+  "nbn_sync_status",
+  "nbn_topics_list",
 ]);
 
 const SESSION_CONTEXT_QUERIES = new Map<string, string>();
@@ -388,6 +391,16 @@ export const NeaBrainPlugin: Plugin = async ({ client }) => {
         include_deleted: z.boolean().optional(),
       },
     },
+    nbn_timeline: {
+      mcp: "observation.timeline",
+      description: "Read NeaBrain timeline context around an observation.",
+      args: {
+        id: z.string(),
+        before: z.number().optional(),
+        after: z.number().optional(),
+        include_deleted: z.boolean().optional(),
+      },
+    },
     nbn_observation_update: {
       mcp: "observation.update",
       description: "Update a NeaBrain observation.",
@@ -409,6 +422,8 @@ export const NeaBrainPlugin: Plugin = async ({ client }) => {
         topic_key: z.string().optional(),
         tags: z.array(z.string()).optional(),
         include_deleted: z.boolean().optional(),
+        disclosure_level: z.string().optional(),
+        session_id: z.string().optional(),
       },
     },
     nbn_observation_delete: {
@@ -427,6 +442,8 @@ export const NeaBrainPlugin: Plugin = async ({ client }) => {
         topic_key: z.string().optional(),
         tags: z.array(z.string()).optional(),
         include_deleted: z.boolean().optional(),
+        disclosure_level: z.string().optional(),
+        session_id: z.string().optional(),
       },
     },
     nbn_topic_upsert: {
@@ -438,6 +455,11 @@ export const NeaBrainPlugin: Plugin = async ({ client }) => {
         description: z.string().optional(),
         metadata: z.record(z.any()).optional(),
       },
+    },
+    nbn_topics_list: {
+      mcp: "nbn_topics_list",
+      description: "List NeaBrain topics with observation counts.",
+      args: {},
     },
     nbn_session_open: {
       mcp: "session.open",
@@ -465,6 +487,31 @@ export const NeaBrainPlugin: Plugin = async ({ client }) => {
       mcp: "config.show",
       description: "Show NeaBrain config.",
       args: {},
+    },
+    nbn_sync_status: {
+      mcp: "nbn_sync_status",
+      description: "Show NeaBrain sync status.",
+      args: {
+        dir: z.string().optional(),
+      },
+    },
+    nbn_sync_export: {
+      mcp: "nbn_sync_export",
+      description: "Export the current NeaBrain snapshot to a sync chunk.",
+      args: {
+        dir: z.string().optional(),
+        project: z.string().optional(),
+        topic_key: z.string().optional(),
+        tags: z.array(z.string()).optional(),
+        include_deleted: z.boolean().optional(),
+      },
+    },
+    nbn_sync_import: {
+      mcp: "nbn_sync_import",
+      description: "Import pending NeaBrain sync chunks.",
+      args: {
+        dir: z.string().optional(),
+      },
     },
   };
 
@@ -524,6 +571,8 @@ export const NeaBrainPlugin: Plugin = async ({ client }) => {
       topic_key: z.string().optional(),
       tags: z.array(z.string()).optional(),
       include_deleted: z.boolean().optional(),
+      disclosure_level: z.string().optional(),
+      session_id: z.string().optional(),
     },
     async execute(args) {
       const payload = {
@@ -532,6 +581,8 @@ export const NeaBrainPlugin: Plugin = async ({ client }) => {
         topic_key: args.topic_key ?? "",
         tags: args.tags ?? [],
         include_deleted: args.include_deleted ?? false,
+        disclosure_level: args.disclosure_level ?? "",
+        session_id: args.session_id ?? "",
       };
       const result = await callMcpToolWithRetry("nbn_context", "search", payload);
       return formatResult(result);

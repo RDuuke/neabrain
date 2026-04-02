@@ -119,6 +119,39 @@ func TestObservationRepositoryCRUD(t *testing.T) {
 	}
 }
 
+func TestObservationRepositoryFindAround(t *testing.T) {
+	db := openTestDB(t)
+	repo := NewObservationRepository(db)
+	ctx := context.Background()
+
+	base := time.Date(2026, 1, 3, 3, 4, 5, 0, time.UTC)
+	observations := []domain.Observation{
+		{ID: "obs-1", Content: "first", CreatedAt: base.Add(-3 * time.Minute), UpdatedAt: base},
+		{ID: "obs-2", Content: "second", CreatedAt: base.Add(-2 * time.Minute), UpdatedAt: base},
+		{ID: "obs-3", Content: "third", CreatedAt: base.Add(-2 * time.Minute), UpdatedAt: base},
+		{ID: "obs-4", Content: "fourth", CreatedAt: base.Add(-time.Minute), UpdatedAt: base},
+	}
+	for _, observation := range observations {
+		if _, err := repo.Create(ctx, observation); err != nil {
+			t.Fatalf("create observation %s: %v", observation.ID, err)
+		}
+	}
+
+	result, err := repo.FindAround(ctx, "obs-3", 2, 1, false)
+	if err != nil {
+		t.Fatalf("find around: %v", err)
+	}
+	if result.Target.ID != "obs-3" {
+		t.Fatalf("expected target obs-3, got %#v", result.Target)
+	}
+	if len(result.Before) != 2 || result.Before[0].ID != "obs-1" || result.Before[1].ID != "obs-2" {
+		t.Fatalf("unexpected before: %#v", result.Before)
+	}
+	if len(result.After) != 1 || result.After[0].ID != "obs-4" {
+		t.Fatalf("unexpected after: %#v", result.After)
+	}
+}
+
 func TestTopicRepositoryUpsert(t *testing.T) {
 	db := openTestDB(t)
 	repo := NewTopicRepository(db)
@@ -160,6 +193,78 @@ func TestTopicRepositoryUpsert(t *testing.T) {
 	}
 	if loaded.Name != updated.Name {
 		t.Fatalf("expected name %q, got %q", updated.Name, loaded.Name)
+	}
+}
+
+func TestTopicRepositoryList(t *testing.T) {
+	db := openTestDB(t)
+	topicRepo := NewTopicRepository(db)
+	observationRepo := NewObservationRepository(db)
+	ctx := context.Background()
+
+	now := time.Date(2026, 2, 2, 10, 0, 0, 0, time.UTC)
+	for _, topic := range []domain.Topic{
+		{
+			ID:          "topic-1",
+			TopicKey:    "alpha-topic",
+			Name:        "Alpha",
+			Description: "first topic",
+			CreatedAt:   now,
+			UpdatedAt:   now,
+		},
+		{
+			ID:          "topic-2",
+			TopicKey:    "beta-topic",
+			Name:        "Beta",
+			Description: "second topic",
+			CreatedAt:   now,
+			UpdatedAt:   now,
+		},
+	} {
+		if _, err := topicRepo.UpsertByTopicKey(ctx, topic); err != nil {
+			t.Fatalf("upsert topic %s: %v", topic.TopicKey, err)
+		}
+	}
+
+	activeObservation := domain.Observation{
+		ID:        "obs-1",
+		Content:   "active",
+		CreatedAt: now,
+		UpdatedAt: now,
+		Project:   "alpha",
+		TopicKey:  "alpha-topic",
+	}
+	if _, err := observationRepo.Create(ctx, activeObservation); err != nil {
+		t.Fatalf("create active observation: %v", err)
+	}
+
+	deletedObservation := domain.Observation{
+		ID:        "obs-2",
+		Content:   "deleted",
+		CreatedAt: now,
+		UpdatedAt: now,
+		Project:   "alpha",
+		TopicKey:  "beta-topic",
+	}
+	if _, err := observationRepo.Create(ctx, deletedObservation); err != nil {
+		t.Fatalf("create deleted observation: %v", err)
+	}
+	if _, err := observationRepo.SoftDelete(ctx, deletedObservation.ID, now.Add(time.Hour)); err != nil {
+		t.Fatalf("soft delete observation: %v", err)
+	}
+
+	summaries, err := topicRepo.List(ctx)
+	if err != nil {
+		t.Fatalf("list topics: %v", err)
+	}
+	if len(summaries) != 2 {
+		t.Fatalf("expected 2 topic summaries, got %d", len(summaries))
+	}
+	if summaries[0].TopicKey != "alpha-topic" || summaries[0].Count != 1 {
+		t.Fatalf("unexpected first summary: %#v", summaries[0])
+	}
+	if summaries[1].TopicKey != "beta-topic" || summaries[1].Count != 0 {
+		t.Fatalf("unexpected second summary: %#v", summaries[1])
 	}
 }
 

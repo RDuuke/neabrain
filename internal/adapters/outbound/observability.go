@@ -79,6 +79,12 @@ func (o *observedObservationRepository) List(ctx context.Context, filter ports.O
 	return o.next.List(ctx, filter)
 }
 
+func (o *observedObservationRepository) FindAround(ctx context.Context, id string, before, after int, includeDeleted bool) (domain.TimelineResult, error) {
+	o.metrics.Inc("repo.observation.timeline")
+	o.logger.Info("repo observation timeline", map[string]any{"id": id, "before": before, "after": after, "include_deleted": includeDeleted})
+	return o.next.FindAround(ctx, id, before, after, includeDeleted)
+}
+
 func (o *observedObservationRepository) SoftDelete(ctx context.Context, id string, deletedAt time.Time) (domain.Observation, error) {
 	o.metrics.Inc("repo.observation.delete")
 	o.logger.Info("repo observation delete", map[string]any{"id": id})
@@ -125,6 +131,12 @@ func (o *observedTopicRepository) GetByTopicKey(ctx context.Context, topicKey st
 	o.metrics.Inc("repo.topic.get")
 	o.logger.Info("repo topic get", map[string]any{"topic_key": topicKey})
 	return o.next.GetByTopicKey(ctx, topicKey)
+}
+
+func (o *observedTopicRepository) List(ctx context.Context) ([]domain.TopicSummary, error) {
+	o.metrics.Inc("repo.topic.list")
+	o.logger.Info("repo topic list", nil)
+	return o.next.List(ctx)
 }
 
 type observedSessionRepository struct {

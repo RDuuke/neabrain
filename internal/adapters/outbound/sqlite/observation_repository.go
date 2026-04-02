@@ -166,6 +166,54 @@ func (r *ObservationRepository) List(ctx context.Context, filter ports.Observati
 	return observations, nil
 }
 
+func (r *ObservationRepository) FindAround(ctx context.Context, id string, before, after int, includeDeleted bool) (domain.TimelineResult, error) {
+	target, err := r.GetByID(ctx, id, includeDeleted)
+	if err != nil {
+		return domain.TimelineResult{}, err
+	}
+
+	result := domain.TimelineResult{Target: target}
+
+	if before > 0 {
+		query := `SELECT id, content, created_at, updated_at, deleted_at, project, topic_key, tags, source, metadata
+			FROM observations
+			WHERE ((created_at < ?) OR (created_at = ? AND id < ?))`
+		args := []any{formatTime(target.CreatedAt), formatTime(target.CreatedAt), target.ID}
+		if !includeDeleted {
+			query += " AND deleted_at IS NULL"
+		}
+		query += " ORDER BY created_at DESC, id DESC LIMIT ?"
+		args = append(args, before)
+
+		observations, err := r.queryObservations(ctx, query, args...)
+		if err != nil {
+			return domain.TimelineResult{}, err
+		}
+		reverseObservations(observations)
+		result.Before = observations
+	}
+
+	if after > 0 {
+		query := `SELECT id, content, created_at, updated_at, deleted_at, project, topic_key, tags, source, metadata
+			FROM observations
+			WHERE ((created_at > ?) OR (created_at = ? AND id > ?))`
+		args := []any{formatTime(target.CreatedAt), formatTime(target.CreatedAt), target.ID}
+		if !includeDeleted {
+			query += " AND deleted_at IS NULL"
+		}
+		query += " ORDER BY created_at ASC, id ASC LIMIT ?"
+		args = append(args, after)
+
+		observations, err := r.queryObservations(ctx, query, args...)
+		if err != nil {
+			return domain.TimelineResult{}, err
+		}
+		result.After = observations
+	}
+
+	return result, nil
+}
+
 func (r *ObservationRepository) SoftDelete(ctx context.Context, id string, deletedAt time.Time) (domain.Observation, error) {
 	result, err := r.db.ExecContext(
 		ctx,
@@ -261,6 +309,35 @@ func (r *ObservationRepository) FindByContent(ctx context.Context, content strin
 	}
 
 	return observations, nil
+}
+
+func (r *ObservationRepository) queryObservations(ctx context.Context, query string, args ...any) ([]domain.Observation, error) {
+	rows, err := r.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var observations []domain.Observation
+	for rows.Next() {
+		observation, err := scanObservation(rows)
+		if err != nil {
+			return nil, err
+		}
+		observations = append(observations, observation)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return observations, nil
+}
+
+func reverseObservations(observations []domain.Observation) {
+	for left, right := 0, len(observations)-1; left < right; left, right = left+1, right-1 {
+		observations[left], observations[right] = observations[right], observations[left]
+	}
 }
 
 func scanObservation(scanner interface {

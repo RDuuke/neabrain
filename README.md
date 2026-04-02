@@ -63,16 +63,21 @@ Guías detalladas en `docs/integrations/`.
 | `nbn_capture` | Crea una observación |
 | `nbn_capture_passive` | Captura pasiva (sin confirmación) |
 | `nbn_read` | Lee una observación por ID |
+| `nbn_timeline` | Navega contexto cronológico alrededor de una observación |
 | `nbn_update` | Actualiza una observación |
 | `nbn_list` | Lista observaciones con filtros |
 | `nbn_delete` | Soft-delete |
 | `nbn_search` | Búsqueda full-text |
 | `nbn_topic_upsert` | Upsert de topic |
+| `nbn_topics_list` | Lista topics con counts |
 | `nbn_session_open` | Abre sesión |
 | `nbn_session_resume` | Reanuda sesión |
 | `nbn_stats` | Estadísticas del store |
 | `nbn_projects_list` | Lista proyectos |
 | `nbn_projects_rename` | Renombra proyecto |
+| `nbn_sync_status` | Muestra estado del sync dir |
+| `nbn_sync_export` | Exporta snapshot actual a un chunk |
+| `nbn_sync_import` | Importa chunks pendientes |
 | `nbn_merge_projects` | Fusiona proyectos |
 | `nbn_config_show` | Muestra configuración activa |
 
@@ -87,9 +92,9 @@ neabrain mcp --profile all      # todas las herramientas
 ## CLI — referencia
 
 ```
-neabrain observation <create|read|update|list|delete|export|import>
+neabrain observation <create|read|timeline|update|list|delete|export|import>
 neabrain search [--query Q] [--project P]
-neabrain topic upsert
+neabrain topic <upsert|list>
 neabrain session <open|resume|update-disclosure>
 neabrain projects <list|rename>
 neabrain config show
@@ -156,6 +161,9 @@ neabrain sync import
 ```
 
 El mismo directorio puede vivir en Dropbox, un repo git, o cualquier sistema de archivos compartido.
+
+Los mismos flujos de sync también están disponibles por MCP con `nbn_sync_status`,
+`nbn_sync_export` y `nbn_sync_import`.
 
 ## Configuración
 

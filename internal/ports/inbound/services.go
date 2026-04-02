@@ -12,6 +12,7 @@ type ObservationService interface {
 	Read(ctx context.Context, id string, includeDeleted bool) (domain.Observation, error)
 	Update(ctx context.Context, input ObservationUpdateInput) (domain.Observation, error)
 	List(ctx context.Context, filter ObservationListFilter) ([]domain.Observation, error)
+	Timeline(ctx context.Context, id string, before, after int, includeDeleted bool) (domain.TimelineResult, error)
 	SoftDelete(ctx context.Context, id string) (domain.Observation, error)
 }
 
@@ -23,11 +24,13 @@ type SearchService interface {
 // TopicService defines topic management use cases.
 type TopicService interface {
 	UpsertByTopicKey(ctx context.Context, input TopicUpsertInput) (domain.Topic, error)
+	List(ctx context.Context) ([]domain.TopicSummary, error)
 }
 
 // SessionService defines session lifecycle use cases.
 type SessionService interface {
 	Open(ctx context.Context, input SessionOpenInput) (domain.Session, error)
+	Read(ctx context.Context, id string) (domain.Session, error)
 	Resume(ctx context.Context, id string) (domain.Session, error)
 	UpdateDisclosure(ctx context.Context, id string, disclosureLevel string) (domain.Session, error)
 }

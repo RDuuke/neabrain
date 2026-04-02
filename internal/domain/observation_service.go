@@ -159,7 +159,24 @@ func (s *ObservationService) Update(ctx context.Context, input ObservationUpdate
 }
 
 func (s *ObservationService) List(ctx context.Context, filter ObservationListFilter) ([]Observation, error) {
-	return s.repo.List(ctx, filter)
+	observations, err := s.repo.List(ctx, filter)
+	if err != nil {
+		return nil, err
+	}
+	return filterObservationsByDisclosure(observations, filter.DisclosureLevel), nil
+}
+
+func (s *ObservationService) Timeline(ctx context.Context, id string, before, after int, includeDeleted bool) (TimelineResult, error) {
+	if strings.TrimSpace(id) == "" {
+		return TimelineResult{}, NewInvalidInput("observation id is required")
+	}
+	if before < 0 {
+		return TimelineResult{}, NewInvalidInput("before count must be >= 0")
+	}
+	if after < 0 {
+		return TimelineResult{}, NewInvalidInput("after count must be >= 0")
+	}
+	return s.repo.FindAround(ctx, id, before, after, includeDeleted)
 }
 
 func (s *ObservationService) GetStats(ctx context.Context) (ObservationStats, error) {

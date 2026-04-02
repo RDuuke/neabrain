@@ -24,18 +24,20 @@ type ObservationUpdateInput struct {
 
 // ObservationListFilter constrains observation listings.
 type ObservationListFilter struct {
-	Project        string
-	TopicKey       string
-	Tags           []string
-	IncludeDeleted bool
+	Project         string
+	TopicKey        string
+	Tags            []string
+	IncludeDeleted  bool
+	DisclosureLevel string
 }
 
 // SearchFilter constrains search results.
 type SearchFilter struct {
-	Project        string
-	TopicKey       string
-	Tags           []string
-	IncludeDeleted bool
+	Project         string
+	TopicKey        string
+	Tags            []string
+	IncludeDeleted  bool
+	DisclosureLevel string
 }
 
 // TopicUpsertInput captures fields required to upsert a topic.

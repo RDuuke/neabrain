@@ -17,6 +17,13 @@ type Observation struct {
 	Metadata map[string]any
 }
 
+// TimelineResult groups observations around a target observation in chronological order.
+type TimelineResult struct {
+	Before []Observation
+	Target Observation
+	After  []Observation
+}
+
 // Topic represents a named grouping for observations.
 type Topic struct {
 	ID          string
@@ -26,6 +33,14 @@ type Topic struct {
 	Metadata    map[string]any
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
+}
+
+// TopicSummary summarizes topic metadata and linked observation counts.
+type TopicSummary struct {
+	TopicKey    string
+	Name        string
+	Description string
+	Count       int
 }
 
 // Session represents an interactive user session.

@@ -135,6 +135,268 @@ func TestMCPCanceledMapping(t *testing.T) {
 	}
 }
 
+func TestMCPSyncStatusAndExport(t *testing.T) {
+	appInstance := newTestApp(t)
+	defer func() {
+		_ = appInstance.Close()
+	}()
+	server := mcp.NewServer(appInstance)
+	syncDir := t.TempDir()
+
+	created := createObservationMCP(t, appInstance, map[string]any{
+		"content": "sync me",
+		"project": "alpha",
+		"source":  "test",
+	})
+	if created.ID == "" {
+		t.Fatal("expected created observation id")
+	}
+
+	exportResult := callMCPTool(t, server, "nbn_sync_export", map[string]any{
+		"dir":     syncDir,
+		"project": "alpha",
+	})
+	if exportResult["chunk_id"] == "" {
+		t.Fatalf("expected chunk_id in export result, got %#v", exportResult)
+	}
+	if exportResult["count"] != float64(1) {
+		t.Fatalf("expected count 1, got %#v", exportResult["count"])
+	}
+	if exportResult["sync_dir"] != syncDir {
+		t.Fatalf("expected sync_dir %q, got %#v", syncDir, exportResult["sync_dir"])
+	}
+
+	statusResult := callMCPTool(t, server, "nbn_sync_status", map[string]any{"dir": syncDir})
+	if statusResult["SyncDir"] != syncDir {
+		t.Fatalf("expected sync_dir %q, got %#v", syncDir, statusResult["SyncDir"])
+	}
+	if statusResult["TotalChunks"] != float64(1) {
+		t.Fatalf("expected total_chunks 1, got %#v", statusResult["TotalChunks"])
+	}
+	if statusResult["PendingChunks"] != float64(1) {
+		t.Fatalf("expected pending_chunks 1, got %#v", statusResult["PendingChunks"])
+	}
+}
+
+func TestMCPSyncImport(t *testing.T) {
+	sourceApp := newTestApp(t)
+	defer func() {
+		_ = sourceApp.Close()
+	}()
+	sourceServer := mcp.NewServer(sourceApp)
+	syncDir := t.TempDir()
+
+	createObservationMCP(t, sourceApp, map[string]any{
+		"content": "importable",
+		"project": "alpha",
+		"source":  "test",
+	})
+	callMCPTool(t, sourceServer, "nbn_sync_export", map[string]any{"dir": syncDir})
+
+	targetApp := newTestApp(t)
+	defer func() {
+		_ = targetApp.Close()
+	}()
+	targetServer := mcp.NewServer(targetApp)
+
+	importResult := callMCPTool(t, targetServer, "nbn_sync_import", map[string]any{"dir": syncDir})
+	if importResult["chunks_processed"] != float64(1) {
+		t.Fatalf("expected chunks_processed 1, got %#v", importResult["chunks_processed"])
+	}
+	if importResult["created"] != float64(1) {
+		t.Fatalf("expected created 1, got %#v", importResult["created"])
+	}
+	if importResult["skipped"] != float64(0) {
+		t.Fatalf("expected skipped 0, got %#v", importResult["skipped"])
+	}
+
+	listResult := callMCPToolRaw(t, targetServer, "observation.list", map[string]any{"project": "alpha"})
+	data, err := json.Marshal(listResult)
+	if err != nil {
+		t.Fatalf("marshal list result: %v", err)
+	}
+	var observations []domain.Observation
+	if err := json.Unmarshal(data, &observations); err != nil {
+		t.Fatalf("decode observations: %v", err)
+	}
+	if len(observations) != 1 {
+		t.Fatalf("expected 1 imported observation, got %d", len(observations))
+	}
+	if observations[0].Content != "importable" {
+		t.Fatalf("expected imported content, got %q", observations[0].Content)
+	}
+}
+
+func TestMCPTopicsList(t *testing.T) {
+	appInstance := newTestApp(t)
+	defer func() {
+		_ = appInstance.Close()
+	}()
+	server := mcp.NewServer(appInstance)
+
+	callMCPTool(t, server, "topic.upsert", map[string]any{
+		"topic_key":   "auth",
+		"name":        "Authentication",
+		"description": "auth topic",
+	})
+	createObservationMCP(t, appInstance, map[string]any{
+		"content":   "auth detail",
+		"project":   "alpha",
+		"topic_key": "auth",
+		"source":    "test",
+	})
+
+	result := callMCPToolRaw(t, server, "nbn_topics_list", map[string]any{})
+	data, err := json.Marshal(result)
+	if err != nil {
+		t.Fatalf("marshal topics list: %v", err)
+	}
+	var summaries []domain.TopicSummary
+	if err := json.Unmarshal(data, &summaries); err != nil {
+		t.Fatalf("decode topic summaries: %v", err)
+	}
+	if len(summaries) != 1 {
+		t.Fatalf("expected 1 topic summary, got %d", len(summaries))
+	}
+	if summaries[0].TopicKey != "auth" || summaries[0].Count != 1 {
+		t.Fatalf("unexpected topic summary: %#v", summaries[0])
+	}
+}
+
+func TestMCPObservationListFiltersByDisclosureLevel(t *testing.T) {
+	appInstance := newTestApp(t)
+	defer func() {
+		_ = appInstance.Close()
+	}()
+	server := mcp.NewServer(appInstance)
+
+	createObservationMCP(t, appInstance, map[string]any{
+		"content": "public",
+		"project": "alpha",
+		"tags":    []string{"shared"},
+		"source":  "test",
+	})
+	createObservationMCP(t, appInstance, map[string]any{
+		"content": "private",
+		"project": "alpha",
+		"tags":    []string{"private"},
+		"source":  "test",
+	})
+	createObservationMCP(t, appInstance, map[string]any{
+		"content": "sensitive",
+		"project": "alpha",
+		"tags":    []string{"sensitive"},
+		"source":  "test",
+	})
+
+	result := callMCPToolRaw(t, server, "observation.list", map[string]any{
+		"project":          "alpha",
+		"disclosure_level": "low",
+	})
+	data, err := json.Marshal(result)
+	if err != nil {
+		t.Fatalf("marshal observations: %v", err)
+	}
+	var observations []domain.Observation
+	if err := json.Unmarshal(data, &observations); err != nil {
+		t.Fatalf("decode observations: %v", err)
+	}
+	if len(observations) != 1 || observations[0].Content != "public" {
+		t.Fatalf("unexpected low disclosure observations: %#v", observations)
+	}
+}
+
+func TestMCPSearchFiltersBySessionDisclosure(t *testing.T) {
+	appInstance := newTestApp(t)
+	defer func() {
+		_ = appInstance.Close()
+	}()
+	server := mcp.NewServer(appInstance)
+
+	createObservationMCP(t, appInstance, map[string]any{
+		"content": "timeout public",
+		"project": "alpha",
+		"tags":    []string{"shared"},
+		"source":  "test",
+	})
+	createObservationMCP(t, appInstance, map[string]any{
+		"content": "timeout private",
+		"project": "alpha",
+		"tags":    []string{"private"},
+		"source":  "test",
+	})
+
+	sessionResult := callMCPTool(t, server, "session.open", map[string]any{"disclosure_level": "medium"})
+	sessionID, _ := sessionResult["ID"].(string)
+	if sessionID == "" {
+		t.Fatalf("expected session id, got %#v", sessionResult)
+	}
+
+	result := callMCPToolRaw(t, server, "search", map[string]any{
+		"query":      "timeout",
+		"project":    "alpha",
+		"session_id": sessionID,
+	})
+	data, err := json.Marshal(result)
+	if err != nil {
+		t.Fatalf("marshal search results: %v", err)
+	}
+	var observations []domain.Observation
+	if err := json.Unmarshal(data, &observations); err != nil {
+		t.Fatalf("decode search results: %v", err)
+	}
+	if len(observations) != 1 || observations[0].Content != "timeout public" {
+		t.Fatalf("unexpected session-filtered search results: %#v", observations)
+	}
+}
+
+func TestMCPTimeline(t *testing.T) {
+	appInstance := newTestApp(t)
+	defer func() {
+		_ = appInstance.Close()
+	}()
+	server := mcp.NewServer(appInstance)
+
+	first := createObservationMCP(t, appInstance, map[string]any{
+		"content": "first",
+		"project": "alpha",
+		"source":  "test",
+	})
+	second := createObservationMCP(t, appInstance, map[string]any{
+		"content": "second",
+		"project": "alpha",
+		"source":  "test",
+	})
+	third := createObservationMCP(t, appInstance, map[string]any{
+		"content": "third",
+		"project": "alpha",
+		"source":  "test",
+	})
+
+	result := callMCPToolRaw(t, server, "observation.timeline", map[string]any{
+		"id":     second.ID,
+		"before": 1,
+		"after":  1,
+	})
+	data, err := json.Marshal(result)
+	if err != nil {
+		t.Fatalf("marshal timeline: %v", err)
+	}
+	var timeline domain.TimelineResult
+	if err := json.Unmarshal(data, &timeline); err != nil {
+		t.Fatalf("decode timeline: %v", err)
+	}
+	if timeline.Target.ID != second.ID {
+		t.Fatalf("expected target %s, got %#v", second.ID, timeline.Target)
+	}
+	if len(timeline.Before) != 1 || timeline.Before[0].ID != first.ID {
+		t.Fatalf("unexpected before observations: %#v", timeline.Before)
+	}
+	if len(timeline.After) != 1 || timeline.After[0].ID != third.ID {
+		t.Fatalf("unexpected after observations: %#v", timeline.After)
+	}
+}
+
 func newTestApp(t *testing.T) *app.App {
 	t.Helper()
 	ctx := context.Background()
@@ -240,6 +502,37 @@ func createObservationMCPError(t *testing.T, appInstance *app.App, payload map[s
 	return resp.Error.Data.Code
 }
 
+func callMCPTool(t *testing.T, server *mcp.Server, name string, payload map[string]any) map[string]any {
+	t.Helper()
+	raw := callMCPToolRaw(t, server, name, payload)
+	data, err := json.Marshal(raw)
+	if err != nil {
+		t.Fatalf("marshal result: %v", err)
+	}
+	var result map[string]any
+	if err := json.Unmarshal(data, &result); err != nil {
+		t.Fatalf("decode result: %v", err)
+	}
+	return result
+}
+
+func callMCPToolRaw(t *testing.T, server *mcp.Server, name string, payload map[string]any) any {
+	t.Helper()
+	args, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal args: %v", err)
+	}
+	params, err := json.Marshal(map[string]any{"name": name, "arguments": json.RawMessage(args)})
+	if err != nil {
+		t.Fatalf("marshal params: %v", err)
+	}
+	resp := server.Handle(context.Background(), mcp.Request{JSONRPC: "2.0", ID: "1", Method: "tools/call", Params: params})
+	if resp.Error != nil {
+		t.Fatalf("mcp error calling %s: %s", name, resp.Error.Message)
+	}
+	return resp.Result
+}
+
 func assertObservationFields(t *testing.T, obs domain.Observation, payload map[string]any) {
 	t.Helper()
 	content := asString(payload["content"])
@@ -316,6 +609,10 @@ func (r *blockingObservationRepo) Update(ctx context.Context, observation domain
 
 func (r *blockingObservationRepo) List(ctx context.Context, filter domain.ObservationListFilter) ([]domain.Observation, error) {
 	return nil, errors.New("unexpected List call")
+}
+
+func (r *blockingObservationRepo) FindAround(ctx context.Context, id string, before, after int, includeDeleted bool) (domain.TimelineResult, error) {
+	return domain.TimelineResult{}, errors.New("unexpected FindAround call")
 }
 
 func (r *blockingObservationRepo) SoftDelete(ctx context.Context, id string, deletedAt time.Time) (domain.Observation, error) {

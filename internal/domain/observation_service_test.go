@@ -3,6 +3,7 @@ package domain_test
 import (
 	"context"
 	"errors"
+	"sort"
 	"testing"
 	"time"
 
@@ -154,6 +155,118 @@ func TestSessionServiceResumeUpdatesLastSeen(t *testing.T) {
 	}
 }
 
+func TestObservationServiceListFiltersByDisclosureLevel(t *testing.T) {
+	repo := newInMemoryObservationRepo()
+	search := &stubSearchIndex{}
+	clock := stubClock{now: time.Date(2026, 5, 6, 13, 0, 0, 0, time.UTC)}
+
+	for _, observation := range []domain.Observation{
+		{ID: "obs-public", Content: "public", CreatedAt: clock.now, UpdatedAt: clock.now, Tags: []string{"shared"}},
+		{ID: "obs-private", Content: "private", CreatedAt: clock.now, UpdatedAt: clock.now, Tags: []string{"private"}},
+		{ID: "obs-sensitive", Content: "sensitive", CreatedAt: clock.now, UpdatedAt: clock.now, Tags: []string{"sensitive"}},
+	} {
+		if _, err := repo.Create(context.Background(), observation); err != nil {
+			t.Fatalf("seed observation %s: %v", observation.ID, err)
+		}
+	}
+
+	svc := domain.NewObservationService(repo, search, clock, &inMemoryDuplicateRepo{}, domain.ExactMatchDedupePolicy{})
+
+	lowResults, err := svc.List(context.Background(), domain.ObservationListFilter{DisclosureLevel: "low"})
+	if err != nil {
+		t.Fatalf("list low: %v", err)
+	}
+	if len(lowResults) != 1 || lowResults[0].ID != "obs-public" {
+		t.Fatalf("unexpected low disclosure results: %#v", lowResults)
+	}
+
+	mediumResults, err := svc.List(context.Background(), domain.ObservationListFilter{DisclosureLevel: "medium"})
+	if err != nil {
+		t.Fatalf("list medium: %v", err)
+	}
+	if len(mediumResults) != 2 {
+		t.Fatalf("expected 2 medium results, got %d", len(mediumResults))
+	}
+}
+
+func TestSearchServiceFiltersByDisclosureLevel(t *testing.T) {
+	repo := newInMemoryObservationRepo()
+	clock := stubClock{now: time.Date(2026, 5, 7, 13, 0, 0, 0, time.UTC)}
+	for _, observation := range []domain.Observation{
+		{ID: "obs-public", Content: "public", CreatedAt: clock.now, UpdatedAt: clock.now, Tags: []string{"shared"}},
+		{ID: "obs-private", Content: "private", CreatedAt: clock.now, UpdatedAt: clock.now, Tags: []string{"private"}},
+		{ID: "obs-sensitive", Content: "sensitive", CreatedAt: clock.now, UpdatedAt: clock.now, Tags: []string{"sensitive"}},
+	} {
+		if _, err := repo.Create(context.Background(), observation); err != nil {
+			t.Fatalf("seed observation %s: %v", observation.ID, err)
+		}
+	}
+
+	search := &stubSearchIndex{results: []domain.SearchResult{
+		{ObservationID: "obs-public"},
+		{ObservationID: "obs-private"},
+		{ObservationID: "obs-sensitive"},
+	}}
+	svc := domain.NewSearchService(repo, search)
+
+	results, err := svc.Search(context.Background(), "anything", domain.SearchFilter{DisclosureLevel: "low"})
+	if err != nil {
+		t.Fatalf("search low disclosure: %v", err)
+	}
+	if len(results) != 1 || results[0].ID != "obs-public" {
+		t.Fatalf("unexpected low disclosure search results: %#v", results)
+	}
+}
+
+func TestObservationServiceTimelineValidatesInputs(t *testing.T) {
+	repo := newInMemoryObservationRepo()
+	search := &stubSearchIndex{}
+	clock := stubClock{now: time.Date(2026, 5, 8, 13, 0, 0, 0, time.UTC)}
+	svc := domain.NewObservationService(repo, search, clock, &inMemoryDuplicateRepo{}, domain.ExactMatchDedupePolicy{})
+
+	if _, err := svc.Timeline(context.Background(), "", 1, 1, false); err == nil {
+		t.Fatal("expected missing id error")
+	}
+	if _, err := svc.Timeline(context.Background(), "obs-1", -1, 1, false); err == nil {
+		t.Fatal("expected invalid before error")
+	}
+	if _, err := svc.Timeline(context.Background(), "obs-1", 1, -1, false); err == nil {
+		t.Fatal("expected invalid after error")
+	}
+}
+
+func TestObservationServiceTimeline(t *testing.T) {
+	repo := newInMemoryObservationRepo()
+	search := &stubSearchIndex{}
+	clock := stubClock{now: time.Date(2026, 5, 9, 13, 0, 0, 0, time.UTC)}
+
+	timeline := []domain.Observation{
+		{ID: "obs-1", Content: "one", CreatedAt: clock.now.Add(-3 * time.Minute), UpdatedAt: clock.now},
+		{ID: "obs-2", Content: "two", CreatedAt: clock.now.Add(-2 * time.Minute), UpdatedAt: clock.now},
+		{ID: "obs-3", Content: "three", CreatedAt: clock.now.Add(-time.Minute), UpdatedAt: clock.now},
+	}
+	for _, observation := range timeline {
+		if _, err := repo.Create(context.Background(), observation); err != nil {
+			t.Fatalf("seed observation %s: %v", observation.ID, err)
+		}
+	}
+
+	svc := domain.NewObservationService(repo, search, clock, &inMemoryDuplicateRepo{}, domain.ExactMatchDedupePolicy{})
+	result, err := svc.Timeline(context.Background(), "obs-2", 1, 1, false)
+	if err != nil {
+		t.Fatalf("timeline: %v", err)
+	}
+	if result.Target.ID != "obs-2" {
+		t.Fatalf("expected target obs-2, got %#v", result.Target)
+	}
+	if len(result.Before) != 1 || result.Before[0].ID != "obs-1" {
+		t.Fatalf("unexpected before results: %#v", result.Before)
+	}
+	if len(result.After) != 1 || result.After[0].ID != "obs-3" {
+		t.Fatalf("unexpected after results: %#v", result.After)
+	}
+}
+
 type stubClock struct {
 	now time.Time
 }
@@ -165,6 +278,7 @@ func (c stubClock) Now() time.Time {
 type stubSearchIndex struct {
 	indexed []domain.Observation
 	err     error
+	results []domain.SearchResult
 }
 
 func (s *stubSearchIndex) Index(ctx context.Context, observation domain.Observation) error {
@@ -177,7 +291,7 @@ func (s *stubSearchIndex) Remove(ctx context.Context, observationID string) erro
 }
 
 func (s *stubSearchIndex) Search(ctx context.Context, query string, filter domain.SearchFilter) ([]domain.SearchResult, error) {
-	return nil, s.err
+	return s.results, s.err
 }
 
 type inMemoryObservationRepo struct {
@@ -233,6 +347,52 @@ func (r *inMemoryObservationRepo) List(ctx context.Context, filter domain.Observ
 		results = append(results, observation)
 	}
 	return results, nil
+}
+
+func (r *inMemoryObservationRepo) FindAround(ctx context.Context, id string, before, after int, includeDeleted bool) (domain.TimelineResult, error) {
+	target, err := r.GetByID(ctx, id, includeDeleted)
+	if err != nil {
+		return domain.TimelineResult{}, err
+	}
+
+	ordered := make([]domain.Observation, 0, len(r.items))
+	for _, observation := range r.items {
+		if !includeDeleted && observation.DeletedAt != nil {
+			continue
+		}
+		ordered = append(ordered, observation)
+	}
+	sort.Slice(ordered, func(i, j int) bool {
+		if ordered[i].CreatedAt.Equal(ordered[j].CreatedAt) {
+			return ordered[i].ID < ordered[j].ID
+		}
+		return ordered[i].CreatedAt.Before(ordered[j].CreatedAt)
+	})
+
+	index := -1
+	for i, observation := range ordered {
+		if observation.ID == id {
+			index = i
+			break
+		}
+	}
+	if index == -1 {
+		return domain.TimelineResult{}, domain.NewNotFound("observation not found")
+	}
+
+	start := index - before
+	if start < 0 {
+		start = 0
+	}
+	end := index + after + 1
+	if end > len(ordered) {
+		end = len(ordered)
+	}
+
+	result := domain.TimelineResult{Target: target}
+	result.Before = append(result.Before, ordered[start:index]...)
+	result.After = append(result.After, ordered[index+1:end]...)
+	return result, nil
 }
 
 func (r *inMemoryObservationRepo) SoftDelete(ctx context.Context, id string, deletedAt time.Time) (domain.Observation, error) {

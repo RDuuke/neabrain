@@ -22,9 +22,9 @@ Timeouts and retries are configurable via plugin env vars:
 - `NEABRAIN_MCP_READ_RETRY_BACKOFF_MS` (default: 200)
 - `NEABRAIN_MCP_DIAGNOSTICS` (default: "0")
 
-Retries apply only to read-only tools: `nbn_observation_read`, `nbn_observation_list`, `nbn_search`,
-`nbn_config_show`, and `nbn_context`. Each read call includes a `deadline_ms` parameter so the MCP
-server can honor the timeout. Set `NEABRAIN_MCP_DIAGNOSTICS=1` to log duration and error category
-for read calls.
+Retries apply only to read-only tools: `nbn_observation_read`, `nbn_observation_list`, `nbn_timeline`,
+`nbn_search`, `nbn_config_show`, `nbn_context`, `nbn_sync_status`, and `nbn_topics_list`. Each read
+call includes a `deadline_ms` parameter so the MCP server can honor the timeout. Set
+`NEABRAIN_MCP_DIAGNOSTICS=1` to log duration and error category for read calls.
 
 See `docs/opencode-mcp.md` for details.

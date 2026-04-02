@@ -51,6 +51,36 @@ func (r *TopicRepository) GetByTopicKey(ctx context.Context, topicKey string) (d
 	return scanTopic(row)
 }
 
+func (r *TopicRepository) List(ctx context.Context) ([]domain.TopicSummary, error) {
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT
+			t.topic_key,
+			t.name,
+			t.description,
+			COUNT(o.id) AS cnt
+		FROM topics t
+		LEFT JOIN observations o
+			ON o.topic_key = t.topic_key
+			AND o.deleted_at IS NULL
+		GROUP BY t.topic_key, t.name, t.description
+		ORDER BY cnt DESC, t.topic_key ASC;`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var summaries []domain.TopicSummary
+	for rows.Next() {
+		var summary domain.TopicSummary
+		if err := rows.Scan(&summary.TopicKey, &summary.Name, &summary.Description, &summary.Count); err != nil {
+			return nil, err
+		}
+		summaries = append(summaries, summary)
+	}
+
+	return summaries, rows.Err()
+}
+
 func (r *TopicRepository) insert(ctx context.Context, topic domain.Topic) (domain.Topic, error) {
 	if strings.TrimSpace(topic.ID) == "" {
 		return domain.Topic{}, domain.NewInvalidInput("topic id is required")
@@ -119,10 +149,10 @@ func scanTopic(scanner interface {
 	Scan(dest ...any) error
 }) (domain.Topic, error) {
 	var (
-		topic       domain.Topic
-		metadata    sql.NullString
-		createdAt   string
-		updatedAt   string
+		topic     domain.Topic
+		metadata  sql.NullString
+		createdAt string
+		updatedAt string
 	)
 
 	if err := scanner.Scan(

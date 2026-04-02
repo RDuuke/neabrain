@@ -41,6 +41,10 @@ func (s *TopicService) UpsertByTopicKey(ctx context.Context, input TopicUpsertIn
 	return s.repo.UpsertByTopicKey(ctx, topic)
 }
 
+func (s *TopicService) List(ctx context.Context) ([]TopicSummary, error) {
+	return s.repo.List(ctx)
+}
+
 func defaultTopicID() string {
 	return uuid.NewString()
 }

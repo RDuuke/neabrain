@@ -169,6 +169,12 @@ func (h *Handler) handleSearch(w http.ResponseWriter, r *http.Request) {
 		Tags:           parseTagsQuery(r.URL.Query().Get("tags")),
 		IncludeDeleted: parseBool(r.URL.Query().Get("include_deleted")),
 	}
+	disclosureLevel, err := h.resolveDisclosureLevel(r)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	filter.DisclosureLevel = disclosureLevel
 
 	results, err := h.app.SearchService.Search(r.Context(), query, filter)
 	if err != nil {
@@ -352,6 +358,12 @@ func (h *Handler) listObservations(w http.ResponseWriter, r *http.Request) {
 		Tags:           parseTagsQuery(r.URL.Query().Get("tags")),
 		IncludeDeleted: parseBool(r.URL.Query().Get("include_deleted")),
 	}
+	disclosureLevel, err := h.resolveDisclosureLevel(r)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	filter.DisclosureLevel = disclosureLevel
 	observations, err := h.app.ObservationService.List(r.Context(), filter)
 	if err != nil {
 		writeError(w, err)
@@ -446,4 +458,16 @@ func pickProject(project string, fallback string) string {
 		return fallback
 	}
 	return project
+}
+
+func (h *Handler) resolveDisclosureLevel(r *http.Request) (string, error) {
+	sessionID := strings.TrimSpace(r.URL.Query().Get("session_id"))
+	if sessionID != "" {
+		session, err := h.app.SessionService.Read(r.Context(), sessionID)
+		if err != nil {
+			return "", err
+		}
+		return session.DisclosureLevel, nil
+	}
+	return strings.TrimSpace(r.URL.Query().Get("disclosure_level")), nil
 }
