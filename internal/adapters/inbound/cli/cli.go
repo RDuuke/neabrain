@@ -578,7 +578,20 @@ func runMCP(ctx context.Context, args []string, out io.Writer, errOut io.Writer)
 }
 
 func runTUI(ctx context.Context, args []string, out io.Writer, errOut io.Writer) int {
-	return tui.Run(ctx, args, os.Stdin, out, errOut, Run)
+	fs := flag.NewFlagSet("tui", flag.ContinueOnError)
+	fs.SetOutput(errOut)
+	var configFlags configFlagSet
+	configFlags.bind(fs)
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	overrides := configFlags.toOverrides()
+	appInstance, err := app.Bootstrap(ctx, overrides)
+	if err != nil {
+		return handleError(err, errOut)
+	}
+	defer func() { _ = appInstance.Close() }()
+	return tui.Run(ctx, appInstance, out)
 }
 
 func runObservationExport(ctx context.Context, args []string, out io.Writer, errOut io.Writer) int {
